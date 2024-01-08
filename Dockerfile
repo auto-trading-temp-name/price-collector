@@ -1,7 +1,7 @@
 FROM rust as builder
 WORKDIR /app
 COPY . .
-RUN cargo install --path .
+RUN cargo install --path . --target=x86_64-unknown-linux-musl
 
 FROM alpine
 COPY --from=builder /usr/local/cargo/bin/price-collector /usr/local/bin/price-collector
