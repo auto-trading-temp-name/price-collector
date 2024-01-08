@@ -1,5 +1,5 @@
 use dotenv::dotenv;
 
 fn main() {
-	dotenv().ok();
+    dotenv().ok();
 }
