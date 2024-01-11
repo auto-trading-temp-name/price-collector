@@ -1,3 +1,6 @@
+mod abis;
+
+use abis::Quoter;
 use clokwerk::{AsyncScheduler, TimeUnits};
 use ethers::prelude::*;
 use ethers::utils::parse_units;
@@ -11,9 +14,6 @@ use std::{env, fs};
 
 const COINS_PATH: &str = "coins.json";
 
-abigen!(Quoter, "src/abis/Quoter.json");
-abigen!(ERC20, "src/abis/ERC20.json");
-
 #[derive(Deserialize, Clone)]
 struct Coin {
 	name: Box<str>,
@@ -22,11 +22,7 @@ struct Coin {
 }
 
 impl Coin {
-	async fn get_price(
-		&self,
-		reference_coin: &Coin,
-		quoter: &Quoter<Provider<Http>>,
-	) -> Result<U256> {
+	async fn get_price(&self, reference_coin: &Coin, quoter: &Quoter<Provider<Http>>) -> Result<u32> {
 		Ok(
 			quoter
 				.quote_exact_input_single(
@@ -40,7 +36,8 @@ impl Coin {
 					U256::zero(),
 				)
 				.call()
-				.await?,
+				.await?
+				.as_u32(),
 		)
 	}
 }
@@ -52,10 +49,7 @@ fn load_coins() -> Vec<Coin> {
 	return coin_data;
 }
 
-async fn fetch_prices(
-	provider: Arc<Provider<Http>>,
-	coins: Vec<Coin>,
-) -> Vec<(Coin, Option<U256>)> {
+async fn fetch_prices(provider: Arc<Provider<Http>>, coins: Vec<Coin>) -> Vec<(Coin, Option<f64>)> {
 	let quoter = Arc::new(Quoter::new(
 		env::var("QUOTER_ADDRESS")
 			.expect("QUOTER_ADDRESS should be in .env")
@@ -66,14 +60,14 @@ async fn fetch_prices(
 
 	let base_coin = &coins[0];
 
-	let prices: Vec<Option<U256>> = future::join_all(coins[1..].iter().map(|coin| {
+	let prices: Vec<Option<f64>> = future::join_all(coins[1..].iter().map(|coin| {
 		println!("fetched price for {}", coin.name);
 		coin.get_price(base_coin, quoter.as_ref())
 	}))
 	.await
 	.into_iter()
 	.map(|result| match result {
-		Ok(price) => Some(price),
+		Ok(price) => Some(f64::from(price) / (f64::powi(10_f64, base_coin.decimals))),
 		Err(error) => {
 			eprintln!("{}", error);
 			None
@@ -81,7 +75,7 @@ async fn fetch_prices(
 	})
 	.collect();
 
-	let result: Vec<(Coin, Option<U256>)> = coins[1..]
+	let result: Vec<(Coin, Option<f64>)> = coins[1..]
 		.to_vec()
 		.into_iter()
 		.zip(prices.into_iter())
@@ -91,7 +85,7 @@ async fn fetch_prices(
 
 fn store_prices(
 	client: Arc<redis::Client>,
-	prices: Vec<(Coin, Option<U256>)>,
+	prices: Vec<(Coin, Option<f64>)>,
 	timestamp: u128,
 ) -> Result<()> {
 	let mut connection = client.get_connection()?;
@@ -122,7 +116,7 @@ fn store_prices(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-	dotenvy::dotenv()?;
+	dotenvy::dotenv().expect(".env should exist");
 
 	let infura_secret = env::var("INFURA_SECRET").expect("INFURA_SECRET should be in .env");
 	let transport_url = format!("https://mainnet.infura.io/v3/{infura_secret}");
