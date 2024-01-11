@@ -131,17 +131,15 @@ async fn main() -> Result<()> {
 		let provider_clone = web3_provider.clone();
 		let client_clone = redis_client.clone();
 		let coins = load_coins();
-		let timestamp = SystemTime::now()
-			.duration_since(UNIX_EPOCH)
-			.expect("time should not go backwards")
-			.as_millis();
 
 		async move {
-			let _ = store_prices(
-				client_clone,
-				fetch_prices(provider_clone, coins).await,
-				timestamp,
-			);
+			let prices = fetch_prices(provider_clone, coins).await;
+			let timestamp = SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.expect("time should not go backwards")
+				.as_millis();
+
+			let _ = store_prices(client_clone, prices, timestamp);
 		}
 	});
 
