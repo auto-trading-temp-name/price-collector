@@ -1,75 +1,155 @@
 use clokwerk::{AsyncScheduler, TimeUnits};
 use ethers::prelude::*;
 use ethers::utils::parse_units;
+use eyre::Result;
+use futures::future;
+use redis::Commands;
 use serde::Deserialize;
-use std::error::Error;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, fs};
 
-const COINS_PATH: &str = "coins.toml";
+const COINS_PATH: &str = "coins.json";
 
 abigen!(Quoter, "src/abis/Quoter.json");
 abigen!(ERC20, "src/abis/ERC20.json");
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct Coin {
 	name: Box<str>,
 	address: Address,
+	decimals: i32,
 }
 
 impl Coin {
-	fn new(name: &str, address: &str) -> Coin {
-		Coin {
-			name: name.into(),
-			address: address.parse().unwrap(),
-		}
+	async fn get_price(
+		&self,
+		reference_coin: &Coin,
+		quoter: &Quoter<Provider<Http>>,
+	) -> Result<U256> {
+		Ok(
+			quoter
+				.quote_exact_input_single(
+					self.address,
+					reference_coin.address,
+					500,
+					U256::from(
+						parse_units(1.0, self.decimals)
+							.expect(format!("1 {} did not parse correctly", reference_coin.name).as_str()),
+					),
+					U256::zero(),
+				)
+				.call()
+				.await?,
+		)
 	}
 }
 
 fn load_coins() -> Vec<Coin> {
 	let coin_data: Vec<Coin> =
-		toml::from_str(&fs::read_to_string(COINS_PATH).expect("coin.toml does not exist"))
-			.expect("coin.toml is not valid");
+		serde_json::from_str(&fs::read_to_string(COINS_PATH).expect("{COINS_PATH} does not exist"))
+			.expect("{COINS_PATH} is not valid");
 	return coin_data;
 }
 
-async fn fetch_prices(provider: Arc<Provider<Http>>) {
-	let quoter = Quoter::new(
+async fn fetch_prices(
+	provider: Arc<Provider<Http>>,
+	coins: Vec<Coin>,
+) -> Vec<(Coin, Option<U256>)> {
+	let quoter = Arc::new(Quoter::new(
 		env::var("QUOTER_ADDRESS")
 			.expect("QUOTER_ADDRESS should be in .env")
 			.parse::<Address>()
-			.unwrap(),
+			.expect("QUOTER_ADDRESS should be a valid address"),
 		provider,
-	);
+	));
 
-	let coins = load_coins();
 	let base_coin = &coins[0];
-	for coin in &coins[1..] {
-		quoter.quote_exact_input_single(
-			coin.address,
-			base_coin.address,
-			500,
-			U256::from(parse_units("1.0", "6").unwrap()),
-			U256::zero(),
-		);
+
+	let prices: Vec<Option<U256>> = future::join_all(coins[1..].iter().map(|coin| {
+		println!("fetched price for {}", coin.name);
+		coin.get_price(base_coin, quoter.as_ref())
+	}))
+	.await
+	.into_iter()
+	.map(|result| match result {
+		Ok(price) => Some(price),
+		Err(error) => {
+			eprintln!("{}", error);
+			None
+		}
+	})
+	.collect();
+
+	let result: Vec<(Coin, Option<U256>)> = coins[1..]
+		.to_vec()
+		.into_iter()
+		.zip(prices.into_iter())
+		.collect();
+	return result;
+}
+
+fn store_prices(
+	client: Arc<redis::Client>,
+	prices: Vec<(Coin, Option<U256>)>,
+	timestamp: u128,
+) -> Result<()> {
+	let mut connection = client.get_connection()?;
+	for (coin, price) in prices {
+		match price {
+			Some(price) => {
+				match connection
+					.rpush::<String, String, i32>(format!("{}:prices", coin.name), price.to_string())
+				{
+					Ok(_) => {}
+					Err(error) => eprintln!("{}", error),
+				}
+
+				match connection
+					.rpush::<String, String, i32>(format!("{}:timestamps", coin.name), timestamp.to_string())
+				{
+					Ok(_) => {}
+					Err(error) => eprintln!("{}", error),
+				}
+				println!("stored price for {}", coin.name);
+			}
+			None => {}
+		};
 	}
+
+	Ok(())
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<()> {
 	dotenvy::dotenv()?;
 
 	let infura_secret = env::var("INFURA_SECRET").expect("INFURA_SECRET should be in .env");
 	let transport_url = format!("https://mainnet.infura.io/v3/{infura_secret}");
+	let redis_uri = env::var("REDIS_URI").expect("REDIS_URI should be in .env");
 
-	let provider = Arc::new(Provider::<Http>::try_from(transport_url).expect(""));
+	let web3_provider = Arc::new(Provider::<Http>::try_from(transport_url)?);
+	let redis_client = Arc::new(redis::Client::open(redis_uri)?);
 
 	let mut scheduler = AsyncScheduler::new();
 
-	scheduler
-		.every(1.minute())
-		.run(move || fetch_prices(provider.clone()));
+	scheduler.every(1.minute()).run(move || {
+		let provider_clone = web3_provider.clone();
+		let client_clone = redis_client.clone();
+		let coins = load_coins();
+		let timestamp = SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.expect("time should not go backwards")
+			.as_millis();
+
+		async move {
+			let _ = store_prices(
+				client_clone,
+				fetch_prices(provider_clone, coins).await,
+				timestamp,
+			);
+		}
+	});
 
 	loop {
 		scheduler.run_pending().await;
