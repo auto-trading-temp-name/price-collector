@@ -4,11 +4,11 @@ use ethers::{prelude::*, utils::parse_units};
 use eyre::Result;
 use serde::Deserialize;
 
-use crate::abis::Quoter;
+use super::abis::Quoter;
 
 const COINS_PATH: &str = "coins.json";
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct Coin {
 	pub name: Box<str>,
 	pub address: Address,
@@ -40,9 +40,9 @@ impl Coin {
 	}
 }
 
-pub fn load_coins() -> Vec<Coin> {
+pub fn load_coins() -> (Coin, Vec<Coin>) {
 	let coin_data: Vec<Coin> =
 		serde_json::from_str(&fs::read_to_string(COINS_PATH).expect("{COINS_PATH} does not exist"))
 			.expect("{COINS_PATH} is not valid");
-	return coin_data;
+	(coin_data[0].clone(), coin_data[1..].to_vec())
 }

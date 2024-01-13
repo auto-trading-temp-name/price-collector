@@ -1,14 +1,17 @@
-use super::abis::Quoter;
-use super::coin::Coin;
+use std::env;
+use std::sync::Arc;
+
 use ethers::prelude::*;
 use eyre::Result;
 use futures::future;
 use redis::Commands;
-use std::env;
-use std::sync::Arc;
+
+use super::abis::Quoter;
+use super::coin::Coin;
 
 pub async fn fetch_prices(
 	provider: Arc<Provider<Http>>,
+	base_coin: &Coin,
 	coins: Vec<Coin>,
 ) -> Vec<(Coin, Option<f64>)> {
 	let quoter = Arc::new(Quoter::new(
@@ -18,8 +21,6 @@ pub async fn fetch_prices(
 			.expect("QUOTER_ADDRESS should be a valid address"),
 		provider,
 	));
-
-	let base_coin = &coins[0];
 
 	let prices: Vec<Option<f64>> = future::join_all(coins[1..].iter().map(|coin| {
 		println!("fetched price for {}", coin.name);
@@ -36,18 +37,17 @@ pub async fn fetch_prices(
 	})
 	.collect();
 
-	let result: Vec<(Coin, Option<f64>)> = coins[1..]
+	coins[1..]
 		.to_vec()
 		.into_iter()
 		.zip(prices.into_iter())
-		.collect();
-	return result;
+		.collect()
 }
 
 pub fn store_prices(
 	client: Arc<redis::Client>,
 	prices: Vec<(Coin, Option<f64>)>,
-	timestamp: u128,
+	timestamp: i64,
 ) -> Result<()> {
 	let mut connection = client.get_connection()?;
 	for (coin, price) in prices {
