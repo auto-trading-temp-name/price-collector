@@ -1,53 +1,96 @@
+use eyre::WrapErr;
+use std::any::type_name;
+use std::collections::HashMap;
+use std::num::ParseFloatError;
+use std::str::FromStr;
 use std::sync::Arc;
 
-use chrono::{prelude::*, Duration, DurationRound};
-use eyre::{Ok, Result};
+use chrono::{prelude::*, Duration};
+use eyre::{OptionExt, Result};
+use hhmmss::Hhmmss;
 use redis::Commands;
+use serde::Deserialize;
+use serde_json::Value;
 
-use super::coin::Coin;
+use crate::coin::Coin;
+use crate::datapoint::{Datapoint, TimeType};
+use crate::COLLECTION_INTERVAL;
+
+const KRAKEN_MAX_DATAPOINTS: u16 = 720;
+
+#[derive(Deserialize, Copy, Clone, Debug)]
+struct KrakenDatapoint {
+	timestamp: i64,
+	open: f32,
+	high: f32,
+	low: f32,
+	close: f32,
+	vwap: f32,
+	volume: f32,
+	count: u16,
+}
+
+#[derive(Deserialize, Copy, Clone)]
+enum KrakenInterval {
+	Minute = 1,
+	FiveMinutes = 5,
+	FifteenMinutes = 15,
+	HalfHour = 30,
+	Hour = 60,
+	FourHours = 240,
+	Day = 1440,
+	Week = 10080,
+	WeekOneDay = 21600,
+}
+
+impl Default for KrakenInterval {
+	fn default() -> Self {
+		KrakenInterval::Minute
+	}
+}
+
+fn convert_str_f32<T: FromStr<Err = ParseFloatError>>(value: &Value) -> Result<T> {
+	let type_name = type_name::<T>();
+	let ok_value = value
+		.as_str()
+		.ok_or_eyre(format!("error converting value from str to {}", type_name))?;
+
+	ok_value.parse().wrap_err("failed to parse into float")
+}
 
 pub fn find_discrepancies(
 	client: Arc<redis::Client>,
 	coins: &Vec<Coin>,
-) -> Result<Vec<(&Coin, Vec<i64>)>> {
+) -> Result<Vec<(&Coin, Vec<Datapoint>)>> {
 	let mut connection = client.get_connection()?;
 	let all_discrepancies = coins
 		.into_iter()
-		.map(|coin| {
-			let mut timestamps: Vec<NaiveDateTime> = connection
-				.lrange::<String, Vec<i64>>(format!("{}:timestamps", coin.name), 0, -1)
-				.ok()?
-				.into_iter()
-				.map(|timestamp| NaiveDateTime::from_timestamp_opt(timestamp.to_owned(), 0))
-				.filter(|x| x.is_some())
-				.map(|x| x.unwrap())
-				.collect();
-			timestamps.push(
-				NaiveDateTime::from_timestamp_opt(Utc::now().timestamp(), 0)?
-					.duration_round(Duration::minutes(1))
-					.ok()?,
-			);
+		.map(|coin: &Coin| {
+			let timestamp = connection.lindex::<String, i64>(format!("{}:timestamps", coin.name), -1);
 
-			let mut discrepancies = vec![];
-
-			for i in 1..timestamps.len() - 1 {
-				let current_time = timestamps[i];
-				let current_timestamp = current_time.timestamp();
-				let next_time = timestamps[i + 1];
-
-				let difference = next_time - current_time;
-				if difference > Duration::minutes(1) {
-					let end_timestamp = timestamps.get(i + 1).unwrap_or(&next_time);
-					let missing_points = ((*end_timestamp).timestamp() - current_time.timestamp()) / 60;
-					discrepancies = [
-						discrepancies,
-						(1..missing_points)
-							.map(|x| current_timestamp + (x + 1 * 60))
-							.collect(),
-					]
-					.concat();
+			let timestamp = match timestamp {
+				Ok(timestamp) => Some(timestamp),
+				Err(error) => {
+					eprintln!("{}", error);
+					None
 				}
-			}
+			}?;
+
+			let last_real_dt = NaiveDateTime::from_timestamp_opt(timestamp, 0)?.and_utc();
+			let next_collection_dt = Utc::now().trunc_subsecs(0).with_second(0)?;
+
+			let missing_points = (next_collection_dt.timestamp() - last_real_dt.timestamp()) / 60;
+
+			let discrepancies: Vec<Datapoint> = (0..missing_points)
+				.map(|t| {
+					Datapoint::new(
+						None,
+						TimeType::DateTime(last_real_dt + Duration::minutes(t + 1)),
+						coin.clone(),
+					)
+				})
+				.filter_map(|t| t.ok())
+				.collect();
 
 			if discrepancies.len() > 0 {
 				Some((coin, discrepancies))
@@ -55,13 +98,132 @@ pub fn find_discrepancies(
 				None
 			}
 		})
-		.filter(|x| x.is_some())
-		.map(|x| x.unwrap())
+		.filter_map(|c| c)
 		.collect();
 
 	Ok(all_discrepancies)
 }
 
-pub fn fix_discrepancies(coins: &Coin, discrepancy_timestamps: Vec<i64>) {
-	todo!();
+async fn fetch_kraken_datapoints(
+	coin: &Coin,
+	interval: &KrakenInterval,
+) -> Result<Vec<KrakenDatapoint>> {
+	let response = reqwest::get(format!(
+		"https://api.kraken.com/0/public/OHLC?pair={}&interval={}",
+		coin.fallback_name, *interval as u16
+	))
+	.await?
+	.json::<serde_json::Value>()
+	.await?;
+
+	// @TODO handle unwraps
+	let errors = response
+		.get("error")
+		.unwrap()
+		.as_array()
+		.unwrap()
+		.to_owned();
+
+	if errors.len() > 0 {
+		todo!("error handling for kraken tbd");
+	}
+
+	// @TODO handle unwraps
+	let datapoints: Vec<KrakenDatapoint> = response
+		.get("result")
+		.unwrap()
+		.get(coin.fallback_name.clone())
+		.unwrap()
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|point| KrakenDatapoint {
+			timestamp: point[0].as_i64().unwrap(),
+			open: convert_str_f32(&point[1]).unwrap(),
+			high: convert_str_f32(&point[2]).unwrap(),
+			low: convert_str_f32(&point[3]).unwrap(),
+			close: convert_str_f32(&point[4]).unwrap(),
+			vwap: convert_str_f32(&point[5]).unwrap(),
+			volume: convert_str_f32(&point[6]).unwrap(),
+			count: point[7].as_u64().unwrap() as u16,
+		})
+		.collect();
+
+	Ok(datapoints)
+}
+
+pub async fn fix_discrepancies(coin: &Coin, datapoints: Vec<Datapoint>) -> Result<Vec<Datapoint>> {
+	let discrepancies = datapoints
+		.into_iter()
+		.filter(|d| d.price.is_none())
+		.collect::<Vec<Datapoint>>();
+
+	let outage_time = COLLECTION_INTERVAL
+		.std_duration()
+		.checked_mul(discrepancies.len() as u32)
+		.ok_or_eyre("outage time calcuation overflowed")?;
+	let outage_time_minutes = (outage_time.as_secs_f32() / 60.0).floor() as u32;
+
+	let interval = KrakenInterval::default();
+	let max_minutes_in_interval = interval as u16 * KRAKEN_MAX_DATAPOINTS as u16;
+
+	println!("outage was {:?} long", outage_time.hhmmss());
+	println!(
+		"max datapoints in interval is {:?}",
+		Duration::minutes(max_minutes_in_interval as i64).hhmmss()
+	);
+
+	if outage_time_minutes as u32 >= max_minutes_in_interval as u32 {
+		println!(
+			"all discrepancies will not be able to be fixed. {}:{}",
+			file!(),
+			line!()
+		);
+		// @TODO use larger intervals if app goes out for longer than max_minues_in_interval
+		let _new_interval = KrakenInterval::FiveMinutes;
+	}
+
+	let fallback_datapoints = fetch_kraken_datapoints(coin, &interval).await?;
+
+	let last_datapoint = fallback_datapoints.last();
+	let fallback_datapoints: HashMap<i64, KrakenDatapoint> = fallback_datapoints
+		.clone()
+		.into_iter()
+		.map(|d| (d.timestamp, d))
+		.collect();
+
+	println!(
+		"fetched {} datapoints at interval {} {}",
+		fallback_datapoints.len(),
+		interval as u16,
+		if last_datapoint.is_some() {
+			format!(
+				"with last fallback datapoint being at {} and last predicted datapoint at {}",
+				(*last_datapoint.unwrap()).timestamp,
+				(*discrepancies.last().unwrap()).datetime.timestamp()
+			)
+		} else {
+			String::from("")
+		}
+	);
+
+	let fixed_discrepancies: Vec<Datapoint> = discrepancies
+		.iter()
+		.map(|d| Datapoint {
+			price: match d.price {
+				None => {
+					let fallback_datapoint = fallback_datapoints.get(&d.datetime.timestamp());
+					match fallback_datapoint {
+						Some(fallback_datapoint) => Some(fallback_datapoint.close as f64),
+						_ => None,
+					}
+				}
+				_ => d.price,
+			},
+			..d.to_owned()
+		})
+		.filter(|d| d.price.is_some())
+		.collect();
+
+	Ok(fixed_discrepancies)
 }
