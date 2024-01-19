@@ -1,4 +1,4 @@
-use eyre::WrapErr;
+use eyre::{ContextCompat, WrapErr};
 use std::any::type_name;
 use std::collections::HashMap;
 use std::num::ParseFloatError;
@@ -116,36 +116,36 @@ async fn fetch_kraken_datapoints(
 	.json::<serde_json::Value>()
 	.await?;
 
-	// @TODO handle unwraps
+	let response_format_err_msg = "fallback response format was not correct";
+
 	let errors = response
 		.get("error")
-		.unwrap()
+		.wrap_err(response_format_err_msg)?
 		.as_array()
-		.unwrap()
+		.wrap_err(response_format_err_msg)?
 		.to_owned();
 
 	if errors.len() > 0 {
 		todo!("error handling for kraken tbd");
 	}
 
-	// @TODO handle unwraps
 	let datapoints: Vec<KrakenDatapoint> = response
 		.get("result")
-		.unwrap()
+		.wrap_err(response_format_err_msg)?
 		.get(coin.fallback_name.clone())
-		.unwrap()
+		.wrap_err(response_format_err_msg)?
 		.as_array()
-		.unwrap()
+		.wrap_err(response_format_err_msg)?
 		.iter()
 		.map(|point| KrakenDatapoint {
-			timestamp: point[0].as_i64().unwrap(),
-			open: convert_str_f32(&point[1]).unwrap(),
-			high: convert_str_f32(&point[2]).unwrap(),
-			low: convert_str_f32(&point[3]).unwrap(),
-			close: convert_str_f32(&point[4]).unwrap(),
-			vwap: convert_str_f32(&point[5]).unwrap(),
-			volume: convert_str_f32(&point[6]).unwrap(),
-			count: point[7].as_u64().unwrap() as u16,
+			timestamp: point[0].as_i64().expect(response_format_err_msg),
+			open: convert_str_f32(&point[1]).expect(response_format_err_msg),
+			high: convert_str_f32(&point[2]).expect(response_format_err_msg),
+			low: convert_str_f32(&point[3]).expect(response_format_err_msg),
+			close: convert_str_f32(&point[4]).expect(response_format_err_msg),
+			vwap: convert_str_f32(&point[5]).expect(response_format_err_msg),
+			volume: convert_str_f32(&point[6]).expect(response_format_err_msg),
+			count: point[7].as_u64().expect(response_format_err_msg) as u16,
 		})
 		.collect();
 
