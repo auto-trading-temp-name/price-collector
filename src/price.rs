@@ -47,6 +47,10 @@ pub fn store_prices(client: &redis::Client, coin: &Coin, data: Vec<Datapoint>) -
 	println!("redis connection established");
 
 	for datapoint in data {
+		if datapoint.price.is_none() {
+			continue;
+		}
+
 		if let Err(error) = connection.rpush::<String, String, i32>(
 			format!("{}:prices", coin.name),
 			datapoint.price.unwrap().to_string(),
