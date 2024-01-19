@@ -4,13 +4,14 @@ use ethers::{prelude::*, utils::parse_units};
 use eyre::Result;
 use serde::Deserialize;
 
-use super::abis::Quoter;
+use crate::abis::Quoter;
 
 const COINS_PATH: &str = "coins.json";
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct Coin {
-	pub name: Box<str>,
+	pub name: String,
+	pub fallback_name: String,
 	pub address: Address,
 	pub decimals: i32,
 }
