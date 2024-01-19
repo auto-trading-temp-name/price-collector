@@ -13,7 +13,9 @@ dotenvy = "0.15.7"
 ethers = { version = "2.0.11", features = ["abigen-online"] }
 eyre = "0.6.11"
 futures = "0.3.30"
+hhmmss = "0.1.0"
 redis = "0.24.0"
+reqwest = "0.11.23"
 serde = "1.0.195"
 serde_json = "1.0.111"
 tokio = { version = "1.35.1", features = ["full"] }
