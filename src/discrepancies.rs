@@ -2,6 +2,7 @@ use eyre::{ContextCompat, WrapErr};
 use std::any::type_name;
 use std::collections::HashMap;
 use std::num::ParseFloatError;
+use std::ops::Mul;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -45,7 +46,7 @@ enum KrakenInterval {
 
 impl Default for KrakenInterval {
 	fn default() -> Self {
-		KrakenInterval::Minute
+		KrakenInterval::FifteenMinutes
 	}
 }
 
@@ -79,13 +80,14 @@ pub fn find_discrepancies(
 			let last_real_dt = NaiveDateTime::from_timestamp_opt(timestamp, 0)?.and_utc();
 			let next_collection_dt = Utc::now().trunc_subsecs(0).with_second(0)?;
 
-			let missing_points = (next_collection_dt.timestamp() - last_real_dt.timestamp()) / 60;
+			let missing_points =
+				((next_collection_dt.timestamp() - last_real_dt.timestamp()) / 60) as i32;
 
 			let discrepancies: Vec<Datapoint> = (0..missing_points)
 				.map(|t| {
 					Datapoint::new(
 						None,
-						TimeType::DateTime(last_real_dt + Duration::minutes(t + 1)),
+						TimeType::DateTime(last_real_dt + COLLECTION_INTERVAL.duration().mul(t + 1)),
 						coin.clone(),
 					)
 				})

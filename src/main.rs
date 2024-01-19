@@ -8,7 +8,7 @@ use std::env;
 use std::sync::Arc;
 
 use chrono::{prelude::*, Duration, DurationRound};
-use clokwerk::{AsyncScheduler, Interval, TimeUnits};
+use clokwerk::{AsyncScheduler, Interval};
 use datapoint::Datapoint;
 use discrepancies::{find_discrepancies, fix_discrepancies};
 use ethers::prelude::*;
@@ -45,7 +45,7 @@ impl CollectionInterval {
 // have to use Duration::milliseconds due to milliseconds (and micro/nanoseconds)
 // being the only way to construct a chrono::Duration in a const
 pub const COLLECTION_INTERVAL: CollectionInterval =
-	CollectionInterval(Duration::milliseconds(60 * 1000));
+	CollectionInterval(Duration::milliseconds(15 * 60 * 1_000));
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -82,31 +82,33 @@ async fn main() -> Result<()> {
 		Err(error) => eprintln!("{}", error),
 	};
 
-	scheduler.every(1.minute()).run(move || {
-		println!("collecting prices");
-		let provider_clone = web3_provider.clone();
-		let client_clone = redis_client.clone();
-		let base_coin_clone = base_coin.clone();
-		let coins_clone = coins.clone();
+	scheduler
+		.every(COLLECTION_INTERVAL.interval())
+		.run(move || {
+			println!("collecting prices");
+			let provider_clone = web3_provider.clone();
+			let client_clone = redis_client.clone();
+			let base_coin_clone = base_coin.clone();
+			let coins_clone = coins.clone();
 
-		async move {
-			println!("fetching prices");
-			let prices = fetch_prices(provider_clone, &base_coin_clone, coins_clone).await;
-			let datetime = datapoint::TimeType::DateTime(
-				Utc::now()
-					.duration_trunc(Duration::minutes(1))
-					.expect("price collection timestamp did not truncate propperly"),
-			);
-			for (coin, price) in prices {
-				if let Ok(datapoint) = Datapoint::new(Some(price), datetime, coin.clone()) {
-					match store_prices(&client_clone, &coin, vec![datapoint]) {
-						Ok(_) => (),
-						Err(error) => eprintln!("{}", error),
-					};
+			async move {
+				println!("fetching prices");
+				let prices = fetch_prices(provider_clone, &base_coin_clone, coins_clone).await;
+				let datetime = datapoint::TimeType::DateTime(
+					Utc::now()
+						.duration_trunc(COLLECTION_INTERVAL.duration())
+						.expect("price collection timestamp did not truncate propperly"),
+				);
+				for (coin, price) in prices {
+					if let Ok(datapoint) = Datapoint::new(Some(price), datetime, coin.clone()) {
+						match store_prices(&client_clone, &coin, vec![datapoint]) {
+							Ok(_) => (),
+							Err(error) => eprintln!("{}", error),
+						};
+					}
 				}
 			}
-		}
-	});
+		});
 
 	loop {
 		scheduler.run_pending().await;
