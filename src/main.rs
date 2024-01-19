@@ -1,19 +1,51 @@
 mod abis;
 mod coin;
+mod datapoint;
 mod discrepancies;
 mod price;
 
+use std::env;
 use std::sync::Arc;
-use std::{env, time::Duration};
 
-use chrono::prelude::*;
-use clokwerk::{AsyncScheduler, TimeUnits};
+use chrono::{prelude::*, Duration, DurationRound};
+use clokwerk::{AsyncScheduler, Interval, TimeUnits};
+use datapoint::Datapoint;
 use discrepancies::{find_discrepancies, fix_discrepancies};
 use ethers::prelude::*;
 use eyre::Result;
 
 use coin::load_coins;
 use price::{fetch_prices, store_prices};
+
+pub struct CollectionInterval(Duration);
+
+impl CollectionInterval {
+	pub fn interval(&self) -> Interval {
+		Interval::Seconds(
+			self
+				.0
+				.num_seconds()
+				.try_into()
+				.expect("collection interval should be positive"),
+		)
+	}
+
+	pub fn duration(&self) -> Duration {
+		self.0
+	}
+
+	pub fn std_duration(&self) -> std::time::Duration {
+		self
+			.0
+			.to_std()
+			.expect("collection interval should be positive")
+	}
+}
+
+// have to use Duration::milliseconds due to milliseconds (and micro/nanoseconds)
+// being the only way to construct a chrono::Duration in a const
+pub const COLLECTION_INTERVAL: CollectionInterval =
+	CollectionInterval(Duration::milliseconds(60 * 1000));
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -35,7 +67,13 @@ async fn main() -> Result<()> {
 				eprintln!("{} discrepancies found, fixing...", discrepancies.len());
 				for (coin, timestamps) in discrepancies {
 					println!("fixing discrepancies for {}", coin.name);
-					fix_discrepancies(coin, timestamps);
+					let fixed = fix_discrepancies(coin, timestamps).await;
+					if let Ok(fixed) = fixed {
+						println!("discrepancies fixed");
+						let _ = store_prices(&redis_client, coin, fixed);
+					} else {
+						eprintln!("{}", fixed.unwrap_err());
+					}
 				}
 			} else {
 				println!("no discrepancies found");
@@ -45,21 +83,38 @@ async fn main() -> Result<()> {
 	};
 
 	scheduler.every(1.minute()).run(move || {
+		println!("collecting prices");
 		let provider_clone = web3_provider.clone();
 		let client_clone = redis_client.clone();
 		let base_coin_clone = base_coin.clone();
 		let coins_clone = coins.clone();
 
 		async move {
+			println!("fetching prices");
 			let prices = fetch_prices(provider_clone, &base_coin_clone, coins_clone).await;
-			let timestamp = Utc::now().timestamp();
-
-			let _ = store_prices(client_clone, prices, timestamp);
+			let datetime = datapoint::TimeType::DateTime(
+				Utc::now()
+					.duration_trunc(Duration::minutes(1))
+					.expect("price collection timestamp did not truncate propperly"),
+			);
+			for (coin, price) in prices {
+				if let Ok(datapoint) = Datapoint::new(Some(price), datetime, coin.clone()) {
+					match store_prices(&client_clone, &coin, vec![datapoint]) {
+						Ok(_) => (),
+						Err(error) => eprintln!("{}", error),
+					};
+				}
+			}
 		}
 	});
 
 	loop {
 		scheduler.run_pending().await;
-		tokio::time::sleep(Duration::from_millis(10)).await;
+		tokio::time::sleep(
+			Duration::milliseconds(10)
+				.to_std()
+				.expect("10ms sleep could not parse to std"),
+		)
+		.await;
 	}
 }
