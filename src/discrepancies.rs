@@ -46,7 +46,7 @@ enum KrakenInterval {
 
 impl Default for KrakenInterval {
 	fn default() -> Self {
-		KrakenInterval::FifteenMinutes
+		KrakenInterval::FiveMinutes
 	}
 }
 

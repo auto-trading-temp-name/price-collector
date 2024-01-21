@@ -45,7 +45,7 @@ impl CollectionInterval {
 // have to use Duration::milliseconds due to milliseconds (and micro/nanoseconds)
 // being the only way to construct a chrono::Duration in a const
 pub const COLLECTION_INTERVAL: CollectionInterval =
-	CollectionInterval(Duration::milliseconds(15 * 60 * 1_000));
+	CollectionInterval(Duration::milliseconds(5 * 60 * 1_000));
 
 #[tokio::main]
 async fn main() -> Result<()> {
