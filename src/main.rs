@@ -1,5 +1,3 @@
-mod abis;
-mod coin;
 mod datapoint;
 mod discrepancies;
 mod price;
@@ -8,44 +6,20 @@ use std::env;
 use std::sync::Arc;
 
 use chrono::{prelude::*, Duration, DurationRound};
-use clokwerk::{AsyncScheduler, Interval};
+use clokwerk::AsyncScheduler;
 use datapoint::Datapoint;
 use discrepancies::{find_discrepancies, fix_discrepancies};
 use ethers::prelude::*;
 use eyre::Result;
 
-use coin::load_coins;
 use price::{fetch_prices, store_prices};
-
-pub struct CollectionInterval(Duration);
-
-impl CollectionInterval {
-	pub fn interval(&self) -> Interval {
-		Interval::Seconds(
-			self
-				.0
-				.num_seconds()
-				.try_into()
-				.expect("collection interval should be positive"),
-		)
-	}
-
-	pub fn duration(&self) -> Duration {
-		self.0
-	}
-
-	pub fn std_duration(&self) -> std::time::Duration {
-		self
-			.0
-			.to_std()
-			.expect("collection interval should be positive")
-	}
-}
+use shared::coin::load_coins;
+use shared::CustomInterval;
 
 // have to use Duration::milliseconds due to milliseconds (and micro/nanoseconds)
 // being the only way to construct a chrono::Duration in a const
-pub const COLLECTION_INTERVAL: CollectionInterval =
-	CollectionInterval(Duration::milliseconds(5 * 60 * 1_000));
+pub const COLLECTION_INTERVAL: CustomInterval =
+	CustomInterval(Duration::milliseconds(5 * 60 * 1_000));
 
 #[tokio::main]
 async fn main() -> Result<()> {

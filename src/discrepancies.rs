@@ -13,9 +13,9 @@ use redis::Commands;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::coin::Coin;
 use crate::datapoint::{Datapoint, TimeType};
 use crate::COLLECTION_INTERVAL;
+use shared::coin::Coin;
 
 const KRAKEN_MAX_DATAPOINTS: u16 = 720;
 

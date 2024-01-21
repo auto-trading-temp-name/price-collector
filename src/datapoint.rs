@@ -1,7 +1,7 @@
 use chrono::{DateTime, NaiveDateTime, Utc};
 use eyre::{OptionExt, Result};
 
-use crate::coin::Coin;
+use shared::coin::Coin;
 
 #[derive(Clone, Debug)]
 pub struct Datapoint {

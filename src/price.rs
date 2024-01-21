@@ -6,9 +6,9 @@ use eyre::Result;
 use futures::future;
 use redis::Commands;
 
-use crate::abis::Quoter;
-use crate::coin::Coin;
 use crate::datapoint::Datapoint;
+use shared::abis::Quoter;
+use shared::coin::Coin;
 
 pub async fn fetch_prices(
 	provider: Arc<Provider<Http>>,
