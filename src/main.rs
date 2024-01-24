@@ -59,14 +59,14 @@ async fn main() -> Result<()> {
 	scheduler
 		.every(COLLECTION_INTERVAL.interval())
 		.run(move || {
-			println!("collecting prices");
+			println!("collecting prices at {}", Local::now());
 			let provider_clone = web3_provider.clone();
 			let client_clone = redis_client.clone();
 			let base_coin_clone = base_coin.clone();
 			let coins_clone = coins.clone();
 
 			async move {
-				println!("fetching prices");
+				println!("fetching prices at {}", Local::now());
 				let prices = fetch_prices(provider_clone, &base_coin_clone, coins_clone).await;
 				let datetime = datapoint::TimeType::DateTime(
 					Utc::now()
