@@ -1,4 +1,3 @@
-use eyre::{ContextCompat, WrapErr};
 use std::any::type_name;
 use std::collections::HashMap;
 use std::num::ParseFloatError;
@@ -7,15 +6,16 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use chrono::{prelude::*, Duration};
+use eyre::{ContextCompat, WrapErr};
 use eyre::{OptionExt, Result};
 use hhmmss::Hhmmss;
 use redis::Commands;
 use serde::Deserialize;
 use serde_json::Value;
+use shared::coin::Coin;
 
 use crate::datapoint::{Datapoint, TimeType};
 use crate::COLLECTION_INTERVAL;
-use shared::coin::Coin;
 
 const KRAKEN_MAX_DATAPOINTS: u16 = 720;
 
