@@ -8,7 +8,7 @@ use std::sync::Arc;
 use chrono::{prelude::*, Duration, DurationRound};
 use clokwerk::AsyncScheduler;
 use datapoint::Datapoint;
-use discrepancies::{find_discrepancies, fix_discrepancies};
+use discrepancies::{find_discrepancies, fix_discrepancies, initialize_datapoints};
 use ethers::prelude::*;
 use eyre::Result;
 
@@ -35,13 +35,23 @@ async fn main() -> Result<()> {
 	let mut scheduler = AsyncScheduler::new();
 	let (base_coin, coins) = load_coins();
 
+	for coin in &coins {
+		match initialize_datapoints(redis_client.clone(), coin).await {
+			Ok(datapoints) => {
+				println!("storing initial prices for {}", coin.name);
+				let _ = store_prices(&redis_client, coin, datapoints);
+			}
+			Err(error) => eprintln!("{}", error),
+		};
+	}
+
 	match find_discrepancies(redis_client.clone(), &coins) {
 		Ok(discrepancies) => {
 			if discrepancies.len() > 0 {
 				eprintln!("{} discrepancies found, fixing...", discrepancies.len());
-				for (coin, timestamps) in discrepancies {
+				for (coin, datapoints) in discrepancies {
 					println!("fixing discrepancies for {}", coin.name);
-					let fixed = fix_discrepancies(coin, timestamps).await;
+					let fixed = fix_discrepancies(coin, datapoints).await;
 					if let Ok(fixed) = fixed {
 						println!("discrepancies fixed");
 						let _ = store_prices(&redis_client, coin, fixed);

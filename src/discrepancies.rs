@@ -229,3 +229,29 @@ pub async fn fix_discrepancies(coin: &Coin, datapoints: Vec<Datapoint>) -> Resul
 
 	Ok(fixed_discrepancies)
 }
+
+pub async fn initialize_datapoints(
+	client: Arc<redis::Client>,
+	coin: &Coin,
+) -> Result<Vec<Datapoint>> {
+	let mut connection = client.get_connection()?;
+	println!("redis connection established");
+
+	let fallback_datapoints = fetch_kraken_datapoints(coin, &KrakenInterval::default()).await?;
+	let first_timestamp = connection
+		.lindex(format!("{}:timestamps", coin.name), 0)
+		.unwrap_or(i64::MAX);
+
+	let mut selected_datapoints = vec![];
+	for datapoint in fallback_datapoints {
+		if datapoint.timestamp < first_timestamp {
+			selected_datapoints.push(Datapoint::new(
+				Some(datapoint.close as f64),
+				TimeType::Timestamp(datapoint.timestamp),
+				coin.clone(),
+			)?);
+		}
+	}
+
+	Ok(selected_datapoints)
+}
