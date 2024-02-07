@@ -86,7 +86,17 @@ async fn main() -> Result<()> {
 				for (coin, price) in prices {
 					if let Ok(datapoint) = Datapoint::new(Some(price), datetime, coin.clone()) {
 						match store_prices(&client_clone, &coin, vec![datapoint]) {
-							Ok(_) => (),
+							Ok(_) => {
+								if let Err(error) = reqwest::get(format!(
+									"{}/price_update",
+									env::var("TRANSACTION_PROCESSOR_URI")
+										.expect("TRANSACTION_PROCESSOR_URI should be in .env")
+								))
+								.await
+								{
+									eprintln!("{}", error);
+								}
+							}
 							Err(error) => eprintln!("{}", error),
 						};
 					}
