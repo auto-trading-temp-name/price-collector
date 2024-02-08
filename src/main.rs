@@ -11,6 +11,11 @@ use datapoint::Datapoint;
 use discrepancies::{find_discrepancies, fix_discrepancies, initialize_datapoints};
 use ethers::prelude::*;
 use eyre::Result;
+use tracing::{error, info, info_span, trace, trace_span, warn, Instrument};
+use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
+use tracing_panic::panic_hook;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::Registry;
 
 use price::{fetch_prices, store_prices};
 use shared::coin::load_coins;
@@ -25,6 +30,20 @@ pub const COLLECTION_INTERVAL: CustomInterval =
 async fn main() -> Result<()> {
 	dotenvy::dotenv().expect(".env should exist");
 
+	let subscriber = Registry::default()
+		.with(JsonStorageLayer)
+		.with(BunyanFormattingLayer::new(
+			"price-collector".into(),
+			std::fs::File::create("server.log")?,
+		))
+		.with(BunyanFormattingLayer::new(
+			"price-collector".into(),
+			std::io::stdout,
+		));
+
+	tracing::subscriber::set_global_default(subscriber).unwrap();
+	std::panic::set_hook(Box::new(panic_hook));
+
 	let infura_secret = env::var("INFURA_SECRET").expect("INFURA_SECRET should be in .env");
 	let transport_url = format!("https://mainnet.infura.io/v3/{infura_secret}");
 	let redis_uri = env::var("REDIS_URI").expect("REDIS_URI should be in .env");
@@ -35,70 +54,96 @@ async fn main() -> Result<()> {
 	let mut scheduler = AsyncScheduler::new();
 	let (base_coin, coins) = load_coins();
 
-	for coin in &coins {
-		match initialize_datapoints(redis_client.clone(), coin).await {
-			Ok(datapoints) => {
-				println!("storing initial prices for {}", coin.name);
-				let _ = store_prices(&redis_client, coin, datapoints);
+	async {
+		for coin in &coins {
+			match initialize_datapoints(redis_client.clone(), coin).await {
+				Ok(datapoints) => {
+					info!(coin = coin.name, "storing initial prices");
+					let _ = store_prices(&redis_client, coin, datapoints);
+				}
+				Err(error) => error!(error = ?error, "error getting initial datapoints"),
+			};
+		}
+	}
+	.instrument(info_span!("initializing datapoints"))
+	.await;
+
+	async {
+		match find_discrepancies(redis_client.clone(), &coins) {
+			Ok(discrepancies) => {
+				if discrepancies.len() > 0 {
+					warn!(
+						discrepancies = discrepancies.len(),
+						"discrepancies found, fixing..."
+					);
+					for (coin, datapoints) in discrepancies {
+						info!("fixing discrepancies for {}", coin.name);
+						let fixed = fix_discrepancies(coin, datapoints).await;
+						match fixed {
+							Ok(datapoints) => {
+								let _ = store_prices(&redis_client, coin, datapoints);
+								info!("stored fixed discrepancies");
+							}
+							Err(error) => error!(error = ?error, "error fixing discrepancies"),
+						}
+					}
+				} else {
+					info!("no discrepancies found");
+				}
 			}
-			Err(error) => eprintln!("{}", error),
+			Err(error) => error!(error = ?error, "error finding discrepancies"),
 		};
 	}
-
-	match find_discrepancies(redis_client.clone(), &coins) {
-		Ok(discrepancies) => {
-			if discrepancies.len() > 0 {
-				eprintln!("{} discrepancies found, fixing...", discrepancies.len());
-				for (coin, datapoints) in discrepancies {
-					println!("fixing discrepancies for {}", coin.name);
-					let fixed = fix_discrepancies(coin, datapoints).await;
-					if let Ok(fixed) = fixed {
-						println!("discrepancies fixed");
-						let _ = store_prices(&redis_client, coin, fixed);
-					} else {
-						eprintln!("{}", fixed.unwrap_err());
-					}
-				}
-			} else {
-				println!("no discrepancies found");
-			}
-		}
-		Err(error) => eprintln!("{}", error),
-	};
+	.instrument(info_span!("fixing discrepancies"))
+	.await;
 
 	scheduler
 		.every(COLLECTION_INTERVAL.interval())
 		.run(move || {
-			println!("collecting prices at {}", Local::now());
+			info!(
+				interval = format!("{}s", COLLECTION_INTERVAL.duration().num_seconds()),
+				"collecting prices"
+			);
+
 			let provider_clone = web3_provider.clone();
 			let client_clone = redis_client.clone();
 			let base_coin_clone = base_coin.clone();
 			let coins_clone = coins.clone();
 
 			async move {
-				println!("fetching prices at {}", Local::now());
 				let prices = fetch_prices(provider_clone, &base_coin_clone, coins_clone).await;
+				info!("fetched prices");
 				let datetime = datapoint::TimeType::DateTime(
 					Utc::now()
 						.duration_trunc(COLLECTION_INTERVAL.duration())
 						.expect("price collection timestamp did not truncate propperly"),
 				);
+
 				for (coin, price) in prices {
-					if let Ok(datapoint) = Datapoint::new(Some(price), datetime, coin.clone()) {
-						match store_prices(&client_clone, &coin, vec![datapoint]) {
-							Ok(_) => {
-								if let Err(error) = reqwest::get(format!(
-									"{}/price_update",
-									env::var("TRANSACTION_PROCESSOR_URI")
-										.expect("TRANSACTION_PROCESSOR_URI should be in .env")
-								))
-								.await
-								{
-									eprintln!("{}", error);
+					match Datapoint::new(Some(price), datetime, coin.clone()) {
+						Ok(datapoint) => {
+							let timestamp = datapoint.datetime.timestamp();
+
+							match store_prices(&client_clone, &coin, vec![datapoint]) {
+								Ok(_) => info!(price, coin = coin.name, "stored price"),
+								Err(error) => error!(error = ?error, "error storing prices"),
+							}
+
+							match reqwest::get(format!(
+								"{}/price_update?timestamp={}",
+								env::var("TRANSACTION_PROCESSOR_URI")
+									.expect("TRANSACTION_PROCESSOR_URI should be in .env"),
+								timestamp
+							))
+							.await
+							{
+								Ok(_) => trace!("sent out price update signal to transaction processor"),
+								Err(error) => {
+									error!(error = ?error, "error sending price signal to transaction processor")
 								}
 							}
-							Err(error) => eprintln!("{}", error),
-						};
+						}
+						Err(error) => error!(error = ?error, "error creating datapoint"),
 					}
 				}
 			}

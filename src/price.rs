@@ -5,6 +5,7 @@ use ethers::prelude::*;
 use eyre::Result;
 use futures::future;
 use redis::Commands;
+use tracing::{error, info, instrument, trace, warn};
 
 use crate::datapoint::Datapoint;
 use shared::abis::Quoter;
@@ -24,7 +25,7 @@ pub async fn fetch_prices(
 	));
 
 	let prices: Vec<f64> = future::join_all(coins.iter().map(|coin| {
-		println!("fetched price for {}", coin.name);
+		trace!("fetched price for {}", coin.name);
 		coin.get_price(base_coin, quoter.as_ref())
 	}))
 	.await
@@ -32,7 +33,7 @@ pub async fn fetch_prices(
 	.map(|result| match result {
 		Ok(price) => Some(f64::from(price) / (f64::powi(10_f64, base_coin.decimals))),
 		Err(error) => {
-			eprintln!("{}", error);
+			warn!(error = ?error, "error getting price");
 			None
 		}
 	})
@@ -42,34 +43,39 @@ pub async fn fetch_prices(
 	coins.to_vec().into_iter().zip(prices.into_iter()).collect()
 }
 
+#[instrument()]
 pub fn store_prices(client: &redis::Client, coin: &Coin, data: Vec<Datapoint>) -> Result<()> {
 	let mut connection = client.get_connection()?;
-	println!("redis connection established");
+	trace!("redis connection established");
 
 	for datapoint in data {
-		if datapoint.price.is_none() {
+		let Datapoint {
+			price,
+			datetime,
+			coin,
+		} = datapoint;
+
+		let Some(price) = price else {
+			continue;
+		};
+
+		let timestamp = datetime.timestamp();
+
+		if let Err(error) =
+			connection.rpush::<String, String, i32>(format!("{}:prices", coin.name), price.to_string())
+		{
+			error!(error = ?error, "error pushing price to redis");
 			continue;
 		}
 
-		if let Err(error) = connection.rpush::<String, String, i32>(
-			format!("{}:prices", coin.name),
-			datapoint.price.unwrap().to_string(),
-		) {
-			eprintln!("{}", error);
+		if let Err(error) = connection
+			.rpush::<String, String, i32>(format!("{}:timestamps", coin.name), timestamp.to_string())
+		{
+			error!(error = ?error, "error pushing timestamp to redis");
+			continue;
 		}
 
-		if let Err(error) = connection.rpush::<String, String, i32>(
-			format!("{}:timestamps", coin.name),
-			datapoint.datetime.timestamp().to_string(),
-		) {
-			eprintln!("{}", error);
-		}
-
-		println!(
-			"stored price for {} at time {}",
-			datapoint.coin.name,
-			datapoint.datetime.timestamp()
-		);
+		info!(coin = coin.name, timestamp, "stored datapoint",);
 	}
 
 	Ok(())

@@ -6,13 +6,13 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use chrono::{prelude::*, Duration};
-use eyre::{ContextCompat, WrapErr};
-use eyre::{OptionExt, Result};
+use eyre::{eyre, ContextCompat, OptionExt, Result, WrapErr};
 use hhmmss::Hhmmss;
 use redis::Commands;
 use serde::Deserialize;
 use serde_json::Value;
 use shared::coin::Coin;
+use tracing::{error, info, instrument, trace, warn};
 
 use crate::datapoint::{Datapoint, TimeType};
 use crate::COLLECTION_INTERVAL;
@@ -59,6 +59,7 @@ fn convert_str_f32<T: FromStr<Err = ParseFloatError>>(value: &Value) -> Result<T
 	ok_value.parse().wrap_err("failed to parse into float")
 }
 
+#[instrument()]
 pub fn find_discrepancies(
 	client: Arc<redis::Client>,
 	coins: &Vec<Coin>,
@@ -72,7 +73,7 @@ pub fn find_discrepancies(
 			let timestamp = match timestamp {
 				Ok(timestamp) => Some(timestamp),
 				Err(error) => {
-					eprintln!("{}", error);
+					error!(error = ?error, "error fetching last timestamp from redis");
 					None
 				}
 			}?;
@@ -154,11 +155,16 @@ async fn fetch_kraken_datapoints(
 	Ok(datapoints)
 }
 
+#[instrument()]
 pub async fn fix_discrepancies(coin: &Coin, datapoints: Vec<Datapoint>) -> Result<Vec<Datapoint>> {
 	let discrepancies = datapoints
 		.into_iter()
 		.filter(|d| d.price.is_none())
 		.collect::<Vec<Datapoint>>();
+
+	if discrepancies.len() < 1 {
+		return Err(eyre!("no discrepancies"));
+	}
 
 	let outage_time = COLLECTION_INTERVAL
 		.std_duration()
@@ -169,18 +175,14 @@ pub async fn fix_discrepancies(coin: &Coin, datapoints: Vec<Datapoint>) -> Resul
 	let interval = KrakenInterval::default();
 	let max_minutes_in_interval = interval as u16 * KRAKEN_MAX_DATAPOINTS as u16;
 
-	println!("outage was {:?} long", outage_time.hhmmss());
-	println!(
+	info!("outage was {:?} long", outage_time.hhmmss());
+	info!(
 		"max datapoints in interval is {:?}",
 		Duration::minutes(max_minutes_in_interval as i64).hhmmss()
 	);
 
 	if outage_time_minutes as u32 >= max_minutes_in_interval as u32 {
-		println!(
-			"all discrepancies will not be able to be fixed. {}:{}",
-			file!(),
-			line!()
-		);
+		warn!("all discrepancies will not be able to be fixed",);
 		// @TODO use larger intervals if app goes out for longer than max_minues_in_interval
 		let _new_interval = KrakenInterval::FiveMinutes;
 	}
@@ -194,19 +196,12 @@ pub async fn fix_discrepancies(coin: &Coin, datapoints: Vec<Datapoint>) -> Resul
 		.map(|d| (d.timestamp, d))
 		.collect();
 
-	println!(
-		"fetched {} datapoints at interval {} {}",
-		fallback_datapoints.len(),
-		interval as u16,
-		if last_datapoint.is_some() {
-			format!(
-				"with last fallback datapoint being at {} and last predicted datapoint at {}",
-				(*last_datapoint.unwrap()).timestamp,
-				(*discrepancies.last().unwrap()).datetime.timestamp()
-			)
-		} else {
-			String::from("")
-		}
+	info!(
+		last_timestamp = (*last_datapoint.unwrap()).timestamp,
+		last_predicted_timestamp = (*discrepancies.last().unwrap()).datetime.timestamp(),
+		datapoints = fallback_datapoints.len(),
+		interval = interval as u16,
+		"fetched datapoints"
 	);
 
 	let fixed_discrepancies: Vec<Datapoint> = discrepancies
@@ -235,7 +230,7 @@ pub async fn initialize_datapoints(
 	coin: &Coin,
 ) -> Result<Vec<Datapoint>> {
 	let mut connection = client.get_connection()?;
-	println!("redis connection established");
+	trace!("redis connection established");
 
 	let fallback_datapoints = fetch_kraken_datapoints(coin, &KrakenInterval::default()).await?;
 	let first_timestamp = connection
