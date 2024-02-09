@@ -25,7 +25,7 @@ pub async fn fetch_prices(
 	));
 
 	let prices: Vec<f64> = future::join_all(coins.iter().map(|coin| {
-		trace!("fetched price for {}", coin.name);
+		trace!(coin = ?coin, "fetched price");
 		coin.get_price(base_coin, quoter.as_ref())
 	}))
 	.await
@@ -43,23 +43,17 @@ pub async fn fetch_prices(
 	coins.to_vec().into_iter().zip(prices.into_iter()).collect()
 }
 
-#[instrument()]
+#[instrument(err, skip(client, data))]
 pub fn store_prices(client: &redis::Client, coin: &Coin, data: Vec<Datapoint>) -> Result<()> {
 	let mut connection = client.get_connection()?;
 	trace!("redis connection established");
 
 	for datapoint in data {
-		let Datapoint {
-			price,
-			datetime,
-			coin,
-		} = datapoint;
+		let Datapoint { coin, .. } = datapoint.clone();
 
-		let Some(price) = price else {
+		let Some(price) = datapoint.price else {
 			continue;
 		};
-
-		let timestamp = datetime.timestamp();
 
 		if let Err(error) =
 			connection.rpush::<String, String, i32>(format!("{}:prices", coin.name), price.to_string())
@@ -68,14 +62,15 @@ pub fn store_prices(client: &redis::Client, coin: &Coin, data: Vec<Datapoint>) -
 			continue;
 		}
 
-		if let Err(error) = connection
-			.rpush::<String, String, i32>(format!("{}:timestamps", coin.name), timestamp.to_string())
-		{
+		if let Err(error) = connection.rpush::<String, String, i32>(
+			format!("{}:timestamps", coin.name),
+			datapoint.datetime.timestamp().to_string(),
+		) {
 			error!(error = ?error, "error pushing timestamp to redis");
 			continue;
 		}
 
-		info!(coin = coin.name, timestamp, "stored datapoint",);
+		info!(coin = ?coin, datapoint = ?datapoint, "stored datapoint",);
 	}
 
 	Ok(())

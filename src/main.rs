@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
 		for coin in &coins {
 			match initialize_datapoints(redis_client.clone(), coin).await {
 				Ok(datapoints) => {
-					info!(coin = coin.name, "storing initial prices");
+					info!(coin = ?coin, "storing initial prices");
 					let _ = store_prices(&redis_client, coin, datapoints);
 				}
 				Err(error) => error!(error = ?error, "error getting initial datapoints"),
@@ -79,14 +79,15 @@ async fn main() -> Result<()> {
 						"discrepancies found, fixing..."
 					);
 					for (coin, datapoints) in discrepancies {
-						info!("fixing discrepancies for {}", coin.name);
+						info!(coin = ?coin, "fixing discrepancies");
 						let fixed = fix_discrepancies(coin, datapoints).await;
 						match fixed {
 							Ok(datapoints) => {
-								let _ = store_prices(&redis_client, coin, datapoints);
-								info!("stored fixed discrepancies");
+								if let Ok(_) = store_prices(&redis_client, coin, datapoints) {
+									info!("stored fixed discrepancies");
+								}
 							}
-							Err(error) => error!(error = ?error, "error fixing discrepancies"),
+							_ => {}
 						}
 					}
 				} else {
@@ -96,7 +97,6 @@ async fn main() -> Result<()> {
 			Err(error) => error!(error = ?error, "error finding discrepancies"),
 		};
 	}
-	.instrument(info_span!("fixing discrepancies"))
 	.await;
 
 	scheduler
@@ -127,7 +127,7 @@ async fn main() -> Result<()> {
 							let timestamp = datapoint.datetime.timestamp();
 
 							match store_prices(&client_clone, &coin, vec![datapoint]) {
-								Ok(_) => info!(price, coin = coin.name, "stored price"),
+								Ok(_) => info!(price, coin = ?coin, "stored price"),
 								Err(error) => error!(error = ?error, "error storing prices"),
 							}
 

@@ -6,13 +6,13 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use chrono::{prelude::*, Duration};
-use eyre::{eyre, ContextCompat, OptionExt, Result, WrapErr};
+use eyre::{eyre, ContextCompat, OptionExt, Result};
 use hhmmss::Hhmmss;
 use redis::Commands;
 use serde::Deserialize;
 use serde_json::Value;
 use shared::coin::Coin;
-use tracing::{error, info, instrument, trace, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::datapoint::{Datapoint, TimeType};
 use crate::COLLECTION_INTERVAL;
@@ -59,7 +59,6 @@ fn convert_str_f32<T: FromStr<Err = ParseFloatError>>(value: &Value) -> Result<T
 	Ok(value.parse()?)
 }
 
-#[instrument()]
 pub fn find_discrepancies(
 	client: Arc<redis::Client>,
 	coins: &Vec<Coin>,
@@ -155,13 +154,14 @@ async fn fetch_kraken_datapoints(
 	Ok(datapoints)
 }
 
-#[instrument()]
+#[instrument(err, skip(datapoints))]
 pub async fn fix_discrepancies(coin: &Coin, datapoints: Vec<Datapoint>) -> Result<Vec<Datapoint>> {
 	let discrepancies = datapoints
 		.into_iter()
 		.filter(|d| d.price.is_none())
 		.collect::<Vec<Datapoint>>();
 
+	debug!(discrepancies = ?discrepancies, "discrpenacies");
 	if discrepancies.len() < 1 {
 		return Err(eyre!("no discrepancies"));
 	}
