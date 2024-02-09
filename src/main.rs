@@ -11,7 +11,7 @@ use datapoint::Datapoint;
 use discrepancies::{find_discrepancies, fix_discrepancies, initialize_datapoints};
 use ethers::prelude::*;
 use eyre::Result;
-use tracing::{error, info, info_span, trace, trace_span, warn, Instrument};
+use tracing::{error, info, info_span, trace, warn, Instrument};
 use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
 use tracing_panic::panic_hook;
 use tracing_subscriber::layer::SubscriberExt;
@@ -28,8 +28,6 @@ pub const COLLECTION_INTERVAL: CustomInterval =
 
 #[tokio::main]
 async fn main() -> Result<()> {
-	dotenvy::dotenv().expect(".env should exist");
-
 	let subscriber = Registry::default()
 		.with(JsonStorageLayer)
 		.with(BunyanFormattingLayer::new(
@@ -44,9 +42,13 @@ async fn main() -> Result<()> {
 	tracing::subscriber::set_global_default(subscriber).unwrap();
 	std::panic::set_hook(Box::new(panic_hook));
 
+	dotenvy::dotenv().expect(".env should exist");
+
+	env::var("TRANSACTION_PROCESSOR_URI").expect("TRANSACTION_PROCESSOR_URI should be in .env");
+	env::var("QUOTER_ADDRESS").expect("QUOTER_ADDRESS should be in .env");
 	let infura_secret = env::var("INFURA_SECRET").expect("INFURA_SECRET should be in .env");
-	let transport_url = format!("https://mainnet.infura.io/v3/{infura_secret}");
 	let redis_uri = env::var("REDIS_URI").expect("REDIS_URI should be in .env");
+	let transport_url = format!("https://mainnet.infura.io/v3/{infura_secret}");
 
 	let web3_provider = Arc::new(Provider::<Http>::try_from(transport_url)?);
 	let redis_client = Arc::new(redis::Client::open(redis_uri)?);

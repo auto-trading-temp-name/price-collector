@@ -52,11 +52,11 @@ impl Default for KrakenInterval {
 
 fn convert_str_f32<T: FromStr<Err = ParseFloatError>>(value: &Value) -> Result<T> {
 	let type_name = type_name::<T>();
-	let ok_value = value
+	let value = value
 		.as_str()
 		.ok_or_eyre(format!("error converting value from str to {}", type_name))?;
 
-	ok_value.parse().wrap_err("failed to parse into float")
+	Ok(value.parse()?)
 }
 
 #[instrument()]
