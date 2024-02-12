@@ -2,8 +2,8 @@ mod datapoint;
 mod discrepancies;
 mod price;
 
-use std::env;
 use std::sync::Arc;
+use std::{env, env::VarError};
 
 use chrono::{prelude::*, Duration, DurationRound};
 use clokwerk::AsyncScheduler;
@@ -44,7 +44,8 @@ async fn main() -> Result<()> {
 
 	dotenvy::dotenv().expect(".env should exist");
 
-	env::var("TRANSACTION_PROCESSOR_URI").expect("TRANSACTION_PROCESSOR_URI should be in .env");
+	// transaction processor is optional
+	// env::var("TRANSACTION_PROCESSOR_URI").expect("TRANSACTION_PROCESSOR_URI should be in .env");
 	env::var("QUOTER_ADDRESS").expect("QUOTER_ADDRESS should be in .env");
 	let infura_secret = env::var("INFURA_SECRET").expect("INFURA_SECRET should be in .env");
 	let redis_uri = env::var("REDIS_URI").expect("REDIS_URI should be in .env");
@@ -122,30 +123,38 @@ async fn main() -> Result<()> {
 				);
 
 				for (coin, price) in prices {
-					match Datapoint::new(Some(price), datetime, coin.clone()) {
-						Ok(datapoint) => {
-							let timestamp = datapoint.datetime.timestamp();
+					let datapoint = match Datapoint::new(Some(price), datetime, coin.clone()) {
+						Ok(datapoint) => datapoint,
+						Err(error) => return error!(error = ?error, "error creating datapoint"),
+					};
 
-							match store_prices(&client_clone, &coin, vec![datapoint]) {
-								Ok(_) => info!(price, coin = ?coin, "stored price"),
-								Err(error) => error!(error = ?error, "error storing prices"),
-							}
+					let timestamp = datapoint.datetime.timestamp();
 
-							match reqwest::get(format!(
-								"{}/price_update?timestamp={}",
-								env::var("TRANSACTION_PROCESSOR_URI")
-									.expect("TRANSACTION_PROCESSOR_URI should be in .env"),
-								timestamp
-							))
-							.await
-							{
-								Ok(_) => trace!("sent out price update signal to transaction processor"),
-								Err(error) => {
-									error!(error = ?error, "error sending price signal to transaction processor")
-								}
-							}
+					match store_prices(&client_clone, &coin, vec![datapoint]) {
+						Ok(_) => info!(price, coin = ?coin, "stored price"),
+						Err(error) => return error!(error = ?error, "error storing prices"),
+					}
+
+					let transaction_processor_uri = match env::var("TRANSACTION_PROCESSOR_URI") {
+						Ok(uri) => uri,
+						Err(error) => {
+							return warn!(error = ?error, "{}", match error {
+								VarError::NotPresent => "TRANSACTION_PROCESSOR_URI not specified",
+								_ => "error getting TRANSACTION_PROCESSOR_URI"
+							})
 						}
-						Err(error) => error!(error = ?error, "error creating datapoint"),
+					};
+
+					match reqwest::get(format!(
+						"{}/price_update?timestamp={}",
+						transaction_processor_uri, timestamp
+					))
+					.await
+					{
+						Ok(_) => trace!("sent out price update signal to transaction processor"),
+						Err(error) => {
+							error!(error = ?error, "error sending price signal to transaction processor")
+						}
 					}
 				}
 			}
