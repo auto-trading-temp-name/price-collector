@@ -5,7 +5,7 @@ use ethers::prelude::*;
 use eyre::Result;
 use futures::future;
 use redis::Commands;
-use tracing::{error, info, instrument, trace, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::datapoint::Datapoint;
 use shared::abis::Quoter;
@@ -25,7 +25,7 @@ pub async fn fetch_prices(
 	));
 
 	let prices: Vec<f64> = future::join_all(coins.iter().map(|coin| {
-		trace!(coin = ?coin, "fetched price");
+		debug!(coin = ?coin, "fetched price");
 		coin.get_price(base_coin, quoter.as_ref())
 	}))
 	.await
@@ -43,35 +43,35 @@ pub async fn fetch_prices(
 	coins.to_vec().into_iter().zip(prices.into_iter()).collect()
 }
 
-#[instrument(err, skip(client, data))]
-pub fn store_prices(client: &redis::Client, coin: &Coin, data: Vec<Datapoint>) -> Result<()> {
+#[instrument(err, skip(client, datapoints))]
+pub fn store_prices(client: &redis::Client, coin: &Coin, datapoints: Vec<Datapoint>) -> Result<()> {
 	let mut connection = client.get_connection()?;
-	trace!("redis connection established");
+	debug!("redis connection established");
 
-	for datapoint in data {
-		let Datapoint { coin, .. } = datapoint.clone();
+	let count = datapoints.len();
+	let datapoints_iter = datapoints
+		.iter()
+		.filter(|datapoint| datapoint.price.is_some());
 
-		let Some(price) = datapoint.price else {
-			continue;
-		};
-
-		if let Err(error) =
-			connection.rpush::<String, String, i32>(format!("{}:prices", coin.name), price.to_string())
-		{
-			error!(error = ?error, "error pushing price to redis");
-			continue;
-		}
-
-		if let Err(error) = connection.rpush::<String, String, i32>(
-			format!("{}:timestamps", coin.name),
-			datapoint.datetime.timestamp().to_string(),
-		) {
-			error!(error = ?error, "error pushing timestamp to redis");
-			continue;
-		}
-
-		info!(coin = ?coin, datapoint = ?datapoint, "stored datapoint",);
+	if let Err(error) = connection.rpush::<String, Vec<String>, i32>(
+		format!("{}:prices", coin.name),
+		datapoints_iter
+			.clone()
+			.map(|datapoint| datapoint.price.unwrap().to_string())
+			.collect(),
+	) {
+		error!(error = ?error, datapoints = ?datapoints, "error pushing price to redis");
 	}
 
+	if let Err(error) = connection.rpush::<String, Vec<String>, i32>(
+		format!("{}:timestamps", coin.name),
+		datapoints_iter
+			.map(|datapoint| datapoint.datetime.timestamp().to_string())
+			.collect(),
+	) {
+		error!(error = ?error, datapoints = ?datapoints, "error pushing timestamp to redis");
+	}
+
+	info!(coin = ?coin, count = count, "stored datapoints");
 	Ok(())
 }
