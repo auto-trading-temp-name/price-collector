@@ -1,5 +1,6 @@
 mod datapoint;
-mod discrepancies;
+mod fixes;
+mod interpolate;
 mod price;
 
 use std::sync::Arc;
@@ -8,10 +9,10 @@ use std::{env, env::VarError};
 use chrono::{prelude::*, Duration, DurationRound};
 use clokwerk::AsyncScheduler;
 use datapoint::Datapoint;
-use discrepancies::{find_discrepancies, fix_discrepancies, initialize_datapoints};
 use ethers::prelude::*;
 use eyre::Result;
-use tracing::{error, info, info_span, trace, warn, Instrument};
+use fixes::{find_discrepancies, fix_discrepancies, initialize_datapoints};
+use tracing::{error, info, warn};
 use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
 use tracing_panic::panic_hook;
 use tracing_subscriber::layer::SubscriberExt;
@@ -67,18 +68,11 @@ async fn main() -> Result<()> {
 				Err(error) => error!(error = ?error, "error getting initial datapoints"),
 			};
 		}
-	}
-	.instrument(info_span!("initializing datapoints"))
-	.await;
 
-	async {
 		match find_discrepancies(redis_client.clone(), &coins) {
 			Ok(discrepancies) => {
 				if discrepancies.len() > 0 {
-					warn!(
-						discrepancies = discrepancies.len(),
-						"discrepancies found, fixing..."
-					);
+					warn!(discrepancies = discrepancies.len(), "discrepancies found");
 					for (coin, datapoints) in discrepancies {
 						info!(coin = ?coin, "fixing discrepancies");
 						let fixed = fix_discrepancies(coin, datapoints).await;
@@ -151,7 +145,7 @@ async fn main() -> Result<()> {
 					))
 					.await
 					{
-						Ok(_) => trace!("sent out price update signal to transaction processor"),
+						Ok(_) => info!("sent out price update signal to transaction processor"),
 						Err(error) => {
 							error!(error = ?error, "error sending price signal to transaction processor")
 						}

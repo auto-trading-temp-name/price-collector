@@ -9,46 +9,15 @@ use chrono::{prelude::*, Duration};
 use eyre::{eyre, ContextCompat, OptionExt, Result};
 use hhmmss::Hhmmss;
 use redis::Commands;
-use serde::Deserialize;
 use serde_json::Value;
 use shared::coin::Coin;
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, error, info, instrument, warn};
 
-use crate::datapoint::{Datapoint, TimeType};
+use crate::datapoint::{
+	Datapoint, KrakenDatapoint, KrakenInterval, TimeType, KRAKEN_MAX_DATAPOINTS,
+};
+use crate::interpolate::interpolate_datapoints;
 use crate::COLLECTION_INTERVAL;
-
-const KRAKEN_MAX_DATAPOINTS: u16 = 720;
-
-#[derive(Deserialize, Copy, Clone, Debug)]
-struct KrakenDatapoint {
-	timestamp: i64,
-	open: f32,
-	high: f32,
-	low: f32,
-	close: f32,
-	vwap: f32,
-	volume: f32,
-	count: u16,
-}
-
-#[derive(Deserialize, Copy, Clone)]
-enum KrakenInterval {
-	Minute = 1,
-	FiveMinutes = 5,
-	FifteenMinutes = 15,
-	HalfHour = 30,
-	Hour = 60,
-	FourHours = 240,
-	Day = 1440,
-	Week = 10080,
-	WeekOneDay = 21600,
-}
-
-impl Default for KrakenInterval {
-	fn default() -> Self {
-		KrakenInterval::FiveMinutes
-	}
-}
 
 fn convert_str_f32<T: FromStr<Err = ParseFloatError>>(value: &Value) -> Result<T> {
 	let type_name = type_name::<T>();
@@ -161,7 +130,6 @@ pub async fn fix_discrepancies(coin: &Coin, datapoints: Vec<Datapoint>) -> Resul
 		.filter(|d| d.price.is_none())
 		.collect::<Vec<Datapoint>>();
 
-	debug!(discrepancies = ?discrepancies, "discrpenacies");
 	if discrepancies.len() < 1 {
 		return Err(eyre!("no discrepancies"));
 	}
@@ -225,28 +193,51 @@ pub async fn fix_discrepancies(coin: &Coin, datapoints: Vec<Datapoint>) -> Resul
 	Ok(fixed_discrepancies)
 }
 
+#[instrument(err, skip(client))]
 pub async fn initialize_datapoints(
 	client: Arc<redis::Client>,
 	coin: &Coin,
 ) -> Result<Vec<Datapoint>> {
-	let mut connection = client.get_connection()?;
-	trace!("redis connection established");
+	let into_datapoint = |datapoint: &KrakenDatapoint| -> Result<Datapoint> {
+		Ok(Datapoint::new(
+			Some(datapoint.close as f64),
+			TimeType::Timestamp(datapoint.timestamp),
+			coin.clone(),
+		)?)
+	};
 
-	let fallback_datapoints = fetch_kraken_datapoints(coin, &KrakenInterval::default()).await?;
+	let mut connection = client.get_connection()?;
+	debug!("redis connection established");
+
+	let fallback_interval = KrakenInterval::default();
+	let extra_fallback_interval = KrakenInterval::Day;
+
+	let fallback_datapoints: Vec<Datapoint> = fetch_kraken_datapoints(coin, &fallback_interval)
+		.await?
+		.iter()
+		.map(into_datapoint)
+		.filter_map(|x| x.ok())
+		.collect();
+	let extra_fallback_datapoints: Vec<Datapoint> = interpolate_datapoints(
+		fetch_kraken_datapoints(coin, &extra_fallback_interval)
+			.await?
+			.iter()
+			.map(into_datapoint)
+			.filter_map(|x| x.ok())
+			.collect(),
+		&extra_fallback_interval,
+		&fallback_interval,
+	);
+
 	let first_timestamp = connection
 		.lindex(format!("{}:timestamps", coin.name), 0)
 		.unwrap_or(i64::MAX);
 
-	let mut selected_datapoints = vec![];
-	for datapoint in fallback_datapoints {
-		if datapoint.timestamp < first_timestamp {
-			selected_datapoints.push(Datapoint::new(
-				Some(datapoint.close as f64),
-				TimeType::Timestamp(datapoint.timestamp),
-				coin.clone(),
-			)?);
-		}
-	}
+	let selected_datapoints: Vec<Datapoint> = [fallback_datapoints, extra_fallback_datapoints]
+		.concat()
+		.into_iter()
+		.filter(|datapoint| datapoint.datetime.timestamp() < first_timestamp)
+		.collect();
 
 	Ok(selected_datapoints)
 }
