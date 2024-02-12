@@ -43,14 +43,6 @@ pub fn interpolate_datapoints(
 				let interpolated_price = lerp(price, next_price, lerp_amount);
 				let interpolated_timestamp = lerp(timestamp as f64, next_timestamp as f64, lerp_amount);
 
-				error!(
-					price = interpolated_price,
-					timestamp = interpolated_timestamp,
-					step = i,
-					lerp_amount = lerp_amount,
-					"pushing to interpolated output init"
-				);
-
 				output.push(Datapoint::new(
 					Some(interpolated_price),
 					TimeType::Timestamp(interpolated_timestamp as i64),
