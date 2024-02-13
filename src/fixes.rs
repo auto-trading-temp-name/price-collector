@@ -11,7 +11,7 @@ use hhmmss::Hhmmss;
 use redis::Commands;
 use serde_json::Value;
 use shared::coin::Coin;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::datapoint::{
 	Datapoint, KrakenDatapoint, KrakenInterval, TimeType, KRAKEN_MAX_DATAPOINTS,
@@ -28,51 +28,34 @@ fn convert_str_f32<T: FromStr<Err = ParseFloatError>>(value: &Value) -> Result<T
 	Ok(value.parse()?)
 }
 
-pub fn find_discrepancies(
-	client: Arc<redis::Client>,
-	coins: &Vec<Coin>,
-) -> Result<Vec<(&Coin, Vec<Datapoint>)>> {
+pub fn find_discrepancies(client: &redis::Client, coin: &Coin) -> Result<Vec<Datapoint>> {
 	let mut connection = client.get_connection()?;
-	let all_discrepancies = coins
-		.into_iter()
-		.map(|coin: &Coin| {
-			let timestamp = connection.lindex::<String, i64>(format!("{}:timestamps", coin.name), -1);
+	debug!("redis connection established");
 
-			let timestamp = match timestamp {
-				Ok(timestamp) => Some(timestamp),
-				Err(error) => {
-					error!(error = ?error, "error fetching last timestamp from redis");
-					None
-				}
-			}?;
+	let timestamp = connection.lindex::<String, i64>(format!("{}:timestamps", coin.name), -1)?;
 
-			let last_real_dt = NaiveDateTime::from_timestamp_opt(timestamp, 0)?.and_utc();
-			let next_collection_dt = Utc::now().trunc_subsecs(0).with_second(0)?;
+	let last_real_dt = NaiveDateTime::from_timestamp_opt(timestamp, 0)
+		.ok_or_eyre("timestamp did not convert to NaiveDateTime")?
+		.and_utc();
+	let next_collection_dt = Utc::now()
+		.trunc_subsecs(0)
+		.with_second(0)
+		.ok_or_eyre("could not set seconds to zero")?;
 
-			let missing_points =
-				((next_collection_dt.timestamp() - last_real_dt.timestamp()) / 60) as i32;
+	let missing_points = ((next_collection_dt.timestamp() - last_real_dt.timestamp()) / 60) as i32;
 
-			let discrepancies: Vec<Datapoint> = (0..missing_points)
-				.map(|t| {
-					Datapoint::new(
-						None,
-						TimeType::DateTime(last_real_dt + COLLECTION_INTERVAL.duration().mul(t + 1)),
-						coin.clone(),
-					)
-				})
-				.filter_map(|t| t.ok())
-				.collect();
-
-			if discrepancies.len() > 0 {
-				Some((coin, discrepancies))
-			} else {
-				None
-			}
+	let discrepancies: Vec<Datapoint> = (0..missing_points)
+		.map(|t| {
+			Datapoint::new(
+				None,
+				TimeType::DateTime(last_real_dt + COLLECTION_INTERVAL.duration().mul(t + 1)),
+				coin.clone(),
+			)
 		})
-		.filter_map(|c| c)
+		.filter_map(|t| t.ok())
 		.collect();
 
-	Ok(all_discrepancies)
+	Ok(discrepancies)
 }
 
 async fn fetch_kraken_datapoints(
@@ -230,13 +213,13 @@ pub async fn initialize_datapoints(
 	);
 
 	let first_timestamp = connection
-		.lindex(format!("{}:timestamps", coin.name), 0)
-		.unwrap_or(i64::MAX);
+		.lindex(format!("{}:timestamps", coin.name), -1)
+		.unwrap_or(i64::MIN);
 
 	let selected_datapoints: Vec<Datapoint> = [fallback_datapoints, extra_fallback_datapoints]
 		.concat()
 		.into_iter()
-		.filter(|datapoint| datapoint.datetime.timestamp() < first_timestamp)
+		.filter(|datapoint| datapoint.datetime.timestamp() > first_timestamp)
 		.collect();
 
 	Ok(selected_datapoints)

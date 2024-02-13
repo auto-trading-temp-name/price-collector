@@ -55,7 +55,7 @@ impl Datapoint {
 		let utc_datetime: DateTime<Utc> = match time {
 			TimeType::DateTime(datetime) => datetime,
 			TimeType::Timestamp(timestamp) => NaiveDateTime::from_timestamp_opt(timestamp, 0)
-				.ok_or_eyre("timestamp did not convert to NaiveDateTime propperly")?
+				.ok_or_eyre("timestamp did not convert to NaiveDateTime")?
 				.and_utc(),
 		};
 

@@ -62,35 +62,41 @@ async fn main() -> Result<()> {
 		for coin in &coins {
 			match initialize_datapoints(redis_client.clone(), coin).await {
 				Ok(datapoints) => {
-					info!(coin = ?coin, "storing initial prices");
-					let _ = store_prices(&redis_client, coin, datapoints);
-				}
-				Err(error) => error!(error = ?error, "error getting initial datapoints"),
-			};
-		}
-
-		match find_discrepancies(redis_client.clone(), &coins) {
-			Ok(discrepancies) => {
-				if discrepancies.len() > 0 {
-					warn!(discrepancies = discrepancies.len(), "discrepancies found");
-					for (coin, datapoints) in discrepancies {
-						info!(coin = ?coin, "fixing discrepancies");
-						let fixed = fix_discrepancies(coin, datapoints).await;
-						match fixed {
-							Ok(datapoints) => {
-								if let Ok(_) = store_prices(&redis_client, coin, datapoints) {
-									info!("stored fixed discrepancies");
-								}
-							}
-							_ => {}
-						}
+					if datapoints.len() > 0 {
+						let _ = store_prices(&redis_client, coin, datapoints);
 					}
-				} else {
-					info!("no discrepancies found");
 				}
+				Err(error) => {
+					error!(error = ?error, "error getting initial datapoints");
+					continue;
+				}
+			};
+
+			let discrepancies = match find_discrepancies(&redis_client, coin) {
+				Ok(datapoints) => datapoints,
+				Err(error) => {
+					error!(error = ?error, "error finding discrepancies");
+					continue;
+				}
+			};
+
+			if discrepancies.len() <= 0 {
+				info!("no discrepancies found");
+				continue;
 			}
-			Err(error) => error!(error = ?error, "error finding discrepancies"),
-		};
+
+			warn!(count = discrepancies.len(), "discrepancies found");
+			info!(coin = ?coin, "fixing discrepancies");
+
+			match fix_discrepancies(coin, discrepancies).await {
+				Ok(datapoints) => {
+					if let Ok(_) = store_prices(&redis_client, coin, datapoints) {
+						info!("stored fixed discrepancies");
+					}
+				}
+				Err(error) => error!(error = ?error, "error fixing discrepancies"),
+			}
+		}
 	}
 	.await;
 

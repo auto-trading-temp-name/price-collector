@@ -1,5 +1,5 @@
 use eyre::{OptionExt, Result};
-use tracing::{error, instrument, warn};
+use tracing::{instrument, warn};
 
 use crate::datapoint::{Datapoint, KrakenInterval, TimeType};
 
