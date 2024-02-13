@@ -66,27 +66,19 @@ async fn main() -> Result<()> {
 						let _ = store_prices(&redis_client, coin, datapoints);
 					}
 				}
-				Err(error) => {
-					error!(error = ?error, "error getting initial datapoints");
-					continue;
-				}
+				Err(error) => return error!(error = ?error, "error getting initial datapoints"),
 			};
 
 			let discrepancies = match find_discrepancies(&redis_client, coin) {
 				Ok(datapoints) => datapoints,
-				Err(error) => {
-					error!(error = ?error, "error finding discrepancies");
-					continue;
-				}
+				Err(error) => return error!(error = ?error, "error finding discrepancies"),
 			};
 
-			if discrepancies.len() <= 0 {
-				info!("no discrepancies found");
-				continue;
+			if discrepancies.len() < 1 {
+				return info!("no discrepancies found");
 			}
 
-			warn!(count = discrepancies.len(), "discrepancies found");
-			info!(coin = ?coin, "fixing discrepancies");
+			warn!(coin = ?coin, count = discrepancies.len(), "fixing discrepancies");
 
 			match fix_discrepancies(coin, discrepancies).await {
 				Ok(datapoints) => {
