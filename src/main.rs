@@ -31,10 +31,12 @@ pub const COLLECTION_INTERVAL: CustomInterval =
 async fn main() -> Result<()> {
 	let subscriber = Registry::default()
 		.with(JsonStorageLayer)
-		.with(BunyanFormattingLayer::new(
-			"price-collector".into(),
-			std::fs::File::create("server.log")?,
-		))
+		.with(BunyanFormattingLayer::new("price-collector".into(), {
+			std::fs::File::options()
+				.append(true)
+				.create(true)
+				.open("price-collector.log")?
+		}))
 		.with(BunyanFormattingLayer::new(
 			"price-collector".into(),
 			std::io::stdout,
