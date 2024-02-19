@@ -16,7 +16,8 @@ RUN \
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install ca-certificates -y
-COPY --from=builder /usr/local/cargo/bin/price-collector /usr/local/bin/price-collector
+WORKDIR /app
+COPY --from=builder /usr/local/cargo/bin/price-collector price-collector
 COPY .env .
 COPY coins.json .
 CMD ["/app/price-collector"]
