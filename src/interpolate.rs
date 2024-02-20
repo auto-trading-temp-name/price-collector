@@ -7,7 +7,7 @@ fn lerp(a: f64, b: f64, amount: f64) -> f64 {
 	(1.0 - amount) * a + amount * b
 }
 
-#[instrument(skip(datapoints))]
+#[instrument(level = "trace", skip(datapoints))]
 pub fn interpolate_datapoints(
 	mut datapoints: Vec<Datapoint>,
 	input_interval: &KrakenInterval,
