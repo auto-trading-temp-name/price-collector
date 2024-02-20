@@ -1,5 +1,4 @@
 use eyre::{OptionExt, Result};
-use tracing::{instrument, warn};
 
 use crate::datapoint::{Datapoint, KrakenInterval, TimeType};
 
@@ -7,7 +6,6 @@ fn lerp(a: f64, b: f64, amount: f64) -> f64 {
 	(1.0 - amount) * a + amount * b
 }
 
-#[instrument(level = "trace", skip(datapoints))]
 pub fn interpolate_datapoints(
 	mut datapoints: Vec<Datapoint>,
 	input_interval: &KrakenInterval,
@@ -33,9 +31,8 @@ pub fn interpolate_datapoints(
 
 			let timestamp = datapoint.datetime.timestamp();
 			let next_timestamp = next_datapoint.datetime.timestamp();
-			let coin = datapoint.coin.clone();
 
-			let mut output = vec![datapoint];
+			let mut output = vec![datapoint.clone()];
 
 			for i in 1..steps {
 				let lerp_amount = (i as f32 / steps as f32) as f64;
@@ -46,7 +43,7 @@ pub fn interpolate_datapoints(
 				output.push(Datapoint::new(
 					Some(interpolated_price),
 					TimeType::Timestamp(interpolated_timestamp as i64),
-					coin.clone(),
+					datapoint.pair.clone(),
 				)?);
 			}
 

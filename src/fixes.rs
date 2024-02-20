@@ -3,15 +3,14 @@ use std::collections::HashMap;
 use std::num::ParseFloatError;
 use std::ops::Mul;
 use std::str::FromStr;
-use std::sync::Arc;
 
 use chrono::{prelude::*, Duration};
 use eyre::{eyre, ContextCompat, OptionExt, Result};
 use hhmmss::Hhmmss;
 use redis::Commands;
 use serde_json::Value;
-use shared::coin::Coin;
-use tracing::{debug, info, instrument, warn};
+use shared::coin::Pair;
+use tracing::{debug, warn};
 
 use crate::datapoint::{
 	Datapoint, KrakenDatapoint, KrakenInterval, TimeType, KRAKEN_MAX_DATAPOINTS,
@@ -28,11 +27,12 @@ fn convert_str_f32<T: FromStr<Err = ParseFloatError>>(value: &Value) -> Result<T
 	Ok(value.parse()?)
 }
 
-pub fn find_discrepancies(client: &redis::Client, coin: &Coin) -> Result<Vec<Datapoint>> {
+pub fn find_discrepancies(client: &redis::Client, pair: &Pair) -> Result<Vec<Datapoint>> {
 	let mut connection = client.get_connection()?;
 	debug!("redis connection established");
 
-	let timestamp = connection.lindex::<String, i64>(format!("{}:timestamps", coin.name), -1)?;
+	let timestamp =
+		connection.lindex::<String, i64>(format!("{}:timestamps", pair.to_string()), -1)?;
 
 	let last_real_dt = NaiveDateTime::from_timestamp_opt(timestamp, 0)
 		.ok_or_eyre("timestamp did not convert to NaiveDateTime")?
@@ -49,7 +49,7 @@ pub fn find_discrepancies(client: &redis::Client, coin: &Coin) -> Result<Vec<Dat
 			Datapoint::new(
 				None,
 				TimeType::DateTime(last_real_dt + COLLECTION_INTERVAL.duration().mul(t + 1)),
-				coin.clone(),
+				pair.clone(),
 			)
 		})
 		.filter_map(|t| t.ok())
@@ -59,12 +59,13 @@ pub fn find_discrepancies(client: &redis::Client, coin: &Coin) -> Result<Vec<Dat
 }
 
 async fn fetch_kraken_datapoints(
-	coin: &Coin,
+	pair: &Pair,
 	interval: &KrakenInterval,
 ) -> Result<Vec<KrakenDatapoint>> {
+	let fallback_name = pair.2.clone().ok_or_eyre("no fallback name")?;
 	let response = reqwest::get(format!(
 		"https://api.kraken.com/0/public/OHLC?pair={}&interval={}",
-		coin.fallback_name, *interval as u16
+		fallback_name, *interval as u16
 	))
 	.await?
 	.json::<serde_json::Value>()
@@ -86,7 +87,7 @@ async fn fetch_kraken_datapoints(
 	let datapoints: Vec<KrakenDatapoint> = response
 		.get("result")
 		.wrap_err(response_format_err_msg)?
-		.get(coin.fallback_name.clone())
+		.get(fallback_name)
 		.wrap_err(response_format_err_msg)?
 		.as_array()
 		.wrap_err(response_format_err_msg)?
@@ -106,8 +107,7 @@ async fn fetch_kraken_datapoints(
 	Ok(datapoints)
 }
 
-#[instrument(err, skip(datapoints))]
-pub async fn fix_discrepancies(coin: &Coin, datapoints: Vec<Datapoint>) -> Result<Vec<Datapoint>> {
+pub async fn fix_discrepancies(pair: &Pair, datapoints: Vec<Datapoint>) -> Result<Vec<Datapoint>> {
 	let discrepancies = datapoints
 		.into_iter()
 		.filter(|d| d.price.is_none())
@@ -126,8 +126,8 @@ pub async fn fix_discrepancies(coin: &Coin, datapoints: Vec<Datapoint>) -> Resul
 	let interval = KrakenInterval::default();
 	let max_minutes_in_interval = interval as u16 * KRAKEN_MAX_DATAPOINTS as u16;
 
-	info!("outage was {:?} long", outage_time.hhmmss());
-	info!(
+	debug!("outage was {:?} long", outage_time.hhmmss());
+	debug!(
 		"max datapoints in interval is {:?}",
 		Duration::minutes(max_minutes_in_interval as i64).hhmmss()
 	);
@@ -138,7 +138,7 @@ pub async fn fix_discrepancies(coin: &Coin, datapoints: Vec<Datapoint>) -> Resul
 		let _new_interval = KrakenInterval::FiveMinutes;
 	}
 
-	let fallback_datapoints = fetch_kraken_datapoints(coin, &interval).await?;
+	let fallback_datapoints = fetch_kraken_datapoints(pair, &interval).await?;
 
 	let last_datapoint = fallback_datapoints.last();
 	let fallback_datapoints: HashMap<i64, KrakenDatapoint> = fallback_datapoints
@@ -147,7 +147,7 @@ pub async fn fix_discrepancies(coin: &Coin, datapoints: Vec<Datapoint>) -> Resul
 		.map(|d| (d.timestamp, d))
 		.collect();
 
-	info!(
+	debug!(
 		last_timestamp = (*last_datapoint.unwrap()).timestamp,
 		last_predicted_timestamp = (*discrepancies.last().unwrap()).datetime.timestamp(),
 		datapoints = fallback_datapoints.len(),
@@ -176,16 +176,12 @@ pub async fn fix_discrepancies(coin: &Coin, datapoints: Vec<Datapoint>) -> Resul
 	Ok(fixed_discrepancies)
 }
 
-#[instrument(err, skip(client))]
-pub async fn initialize_datapoints(
-	client: Arc<redis::Client>,
-	coin: &Coin,
-) -> Result<Vec<Datapoint>> {
+pub async fn initialize_datapoints(client: &redis::Client, pair: &Pair) -> Result<Vec<Datapoint>> {
 	let into_datapoint = |datapoint: &KrakenDatapoint| -> Result<Datapoint> {
 		Ok(Datapoint::new(
 			Some(datapoint.close as f64),
 			TimeType::Timestamp(datapoint.timestamp),
-			coin.clone(),
+			pair.clone(),
 		)?)
 	};
 
@@ -195,14 +191,14 @@ pub async fn initialize_datapoints(
 	let fallback_interval = KrakenInterval::default();
 	let extra_fallback_interval = KrakenInterval::Day;
 
-	let fallback_datapoints: Vec<Datapoint> = fetch_kraken_datapoints(coin, &fallback_interval)
+	let fallback_datapoints: Vec<Datapoint> = fetch_kraken_datapoints(pair, &fallback_interval)
 		.await?
 		.iter()
 		.map(into_datapoint)
 		.filter_map(|x| x.ok())
 		.collect();
 	let extra_fallback_datapoints: Vec<Datapoint> = interpolate_datapoints(
-		fetch_kraken_datapoints(coin, &extra_fallback_interval)
+		fetch_kraken_datapoints(pair, &extra_fallback_interval)
 			.await?
 			.iter()
 			.map(into_datapoint)
@@ -213,7 +209,7 @@ pub async fn initialize_datapoints(
 	);
 
 	let first_timestamp = connection
-		.lindex(format!("{}:timestamps", coin.name), -1)
+		.lindex(format!("{}:timestamps", pair.to_string()), -1)
 		.unwrap_or(i64::MIN);
 
 	let selected_datapoints: Vec<Datapoint> = [fallback_datapoints, extra_fallback_datapoints]

@@ -1,21 +1,17 @@
-use std::env;
-use std::sync::Arc;
+use std::{env, ops::Div, sync::Arc};
 
 use ethers::prelude::*;
-use eyre::Result;
+use ethers::utils::parse_units;
+use eyre::{Context, OptionExt, Result};
 use futures::future;
 use redis::Commands;
-use tracing::{debug, error, info, instrument, warn};
+use rug::{float::MiniFloat, ops::CompleteRound};
+use shared::{abis::Quoter, coin::Pair};
+use tracing::{debug, error, info, instrument};
 
 use crate::datapoint::Datapoint;
-use shared::abis::Quoter;
-use shared::coin::Coin;
 
-pub async fn fetch_prices(
-	provider: Arc<Provider<Http>>,
-	base_coin: &Coin,
-	coins: Vec<Coin>,
-) -> Vec<(Coin, f64)> {
+pub async fn fetch_prices(provider: Arc<Provider<Http>>, pairs: &[Pair]) -> Vec<(Pair, f64)> {
 	let quoter = Arc::new(Quoter::new(
 		env::var("QUOTER_ADDRESS")
 			.expect("QUOTER_ADDRESS should be in .env")
@@ -24,27 +20,52 @@ pub async fn fetch_prices(
 		provider,
 	));
 
-	let prices: Vec<f64> = future::join_all(coins.iter().map(|coin| {
-		debug!(coin = ?coin, "fetched price");
-		coin.get_price(base_coin, quoter.as_ref())
+	let prices: Vec<f64> = future::join_all(pairs.into_iter().map(|pair| {
+		debug!(pair = ?pair, "fetched price");
+		async {
+			let price = quoter
+				.quote_exact_input_single(
+					pair.1.address,
+					pair.0.address,
+					500,
+					U256::from(
+						parse_units(1.0, pair.1.decimals)
+							.wrap_err(format!("1 {} did not parse correctly", pair.1.name))?,
+					),
+					U256::zero(),
+				)
+				.call()
+				.await?;
+			let price = std::panic::catch_unwind(|| price.as_u128())
+				.ok()
+				.ok_or_eyre("panic when converting price to u128")?;
+
+			Ok((pair.clone(), price))
+		}
 	}))
 	.await
 	.into_iter()
-	.map(|result| match result {
-		Ok(price) => Some(f64::from(price) / (f64::powi(10_f64, base_coin.decimals))),
-		Err(error) => {
-			warn!(error = ?error, "error getting price");
-			None
+	.filter_map(|x: Result<(Pair, u128)>| {
+		if let Err(ref error) = x {
+			error!(error = ?error, "error getting price");
 		}
+
+		x.ok()
 	})
-	.filter_map(|x| x)
+	.map(|(pair, price)| {
+		MiniFloat::from(price)
+			.borrow_excl()
+			.div(i32::pow(10, pair.0.decimals))
+			.complete(24)
+			.to_f64()
+	})
 	.collect();
 
-	coins.to_vec().into_iter().zip(prices.into_iter()).collect()
+	pairs.to_vec().into_iter().zip(prices.into_iter()).collect()
 }
 
-#[instrument(err, skip(client, datapoints))]
-pub fn store_prices(client: &redis::Client, coin: &Coin, datapoints: Vec<Datapoint>) -> Result<()> {
+#[instrument(err, skip(client))]
+pub fn store_prices(client: &redis::Client, pair: &Pair, datapoints: Vec<Datapoint>) -> Result<()> {
 	let mut connection = client.get_connection()?;
 	debug!("redis connection established");
 
@@ -54,7 +75,7 @@ pub fn store_prices(client: &redis::Client, coin: &Coin, datapoints: Vec<Datapoi
 		.filter(|datapoint| datapoint.price.is_some());
 
 	if let Err(error) = connection.rpush::<String, Vec<String>, i32>(
-		format!("{}:prices", coin.name),
+		format!("{}:prices", pair.to_string()),
 		datapoints_iter
 			.clone()
 			.map(|datapoint| datapoint.price.unwrap().to_string())
@@ -64,7 +85,7 @@ pub fn store_prices(client: &redis::Client, coin: &Coin, datapoints: Vec<Datapoi
 	}
 
 	if let Err(error) = connection.rpush::<String, Vec<String>, i32>(
-		format!("{}:timestamps", coin.name),
+		format!("{}:timestamps", pair.to_string()),
 		datapoints_iter
 			.map(|datapoint| datapoint.datetime.timestamp().to_string())
 			.collect(),
@@ -72,6 +93,6 @@ pub fn store_prices(client: &redis::Client, coin: &Coin, datapoints: Vec<Datapoi
 		error!(error = ?error, datapoints = ?datapoints, "error pushing timestamp to redis");
 	}
 
-	info!(coin = ?coin, count = count, "stored datapoints");
+	info!(count = count, "stored datapoints");
 	Ok(())
 }

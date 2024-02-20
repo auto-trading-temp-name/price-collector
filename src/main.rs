@@ -12,20 +12,26 @@ use datapoint::Datapoint;
 use ethers::prelude::*;
 use eyre::Result;
 use fixes::{find_discrepancies, fix_discrepancies, initialize_datapoints};
-use tracing::{error, info, warn};
+use lazy_static::lazy_static;
+use shared::coin::Pair;
+use tracing::{debug, error, info, warn};
 use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
 use tracing_panic::panic_hook;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::Registry;
 
 use price::{fetch_prices, store_prices};
-use shared::coin::load_coins;
 use shared::CustomInterval;
 
 // have to use Duration::milliseconds due to milliseconds (and micro/nanoseconds)
 // being the only way to construct a chrono::Duration in a const
 pub const COLLECTION_INTERVAL: CustomInterval =
 	CustomInterval(Duration::milliseconds(5 * 60 * 1_000));
+
+pub const CURRENT_CHAIN: Chain = Chain::Mainnet;
+lazy_static! {
+	static ref SUPPORTED_PAIRS: Vec<Pair> = vec![Pair::usdc_weth(Some(CURRENT_CHAIN as u64))];
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -54,24 +60,23 @@ async fn main() -> Result<()> {
 	let redis_uri = env::var("REDIS_URI").expect("REDIS_URI should be in .env");
 	let transport_url = format!("https://mainnet.infura.io/v3/{infura_secret}");
 
-	let web3_provider = Arc::new(Provider::<Http>::try_from(transport_url)?);
+	let web3_provider = Arc::new(Provider::<Http>::try_from(transport_url)?.for_chain(CURRENT_CHAIN));
 	let redis_client = Arc::new(redis::Client::open(redis_uri)?);
 
 	let mut scheduler = AsyncScheduler::new();
-	let (base_coin, coins) = load_coins();
 
-	async {
-		for coin in &coins {
-			match initialize_datapoints(redis_client.clone(), coin).await {
+	for pair in (*SUPPORTED_PAIRS).clone().into_iter() {
+		async {
+			match initialize_datapoints(&redis_client, &pair).await {
 				Ok(datapoints) => {
 					if datapoints.len() > 0 {
-						let _ = store_prices(&redis_client, coin, datapoints);
+						let _ = store_prices(&redis_client, &pair, datapoints);
 					}
 				}
 				Err(error) => return error!(error = ?error, "error getting initial datapoints"),
 			};
 
-			let discrepancies = match find_discrepancies(&redis_client, coin) {
+			let discrepancies = match find_discrepancies(&redis_client, &pair) {
 				Ok(datapoints) => datapoints,
 				Err(error) => return error!(error = ?error, "error finding discrepancies"),
 			};
@@ -80,19 +85,19 @@ async fn main() -> Result<()> {
 				return info!("no discrepancies found");
 			}
 
-			warn!(coin = ?coin, count = discrepancies.len(), "fixing discrepancies");
+			warn!(pair = ?pair, count = discrepancies.len(), "fixing discrepancies");
 
-			match fix_discrepancies(coin, discrepancies).await {
+			match fix_discrepancies(&pair, discrepancies).await {
 				Ok(datapoints) => {
-					if let Ok(_) = store_prices(&redis_client, coin, datapoints) {
+					if let Ok(_) = store_prices(&redis_client, &pair, datapoints) {
 						info!("stored fixed discrepancies");
 					}
 				}
 				Err(error) => error!(error = ?error, "error fixing discrepancies"),
 			}
 		}
+		.await;
 	}
-	.await;
 
 	scheduler
 		.every(COLLECTION_INTERVAL.interval())
@@ -104,12 +109,9 @@ async fn main() -> Result<()> {
 
 			let provider_clone = web3_provider.clone();
 			let client_clone = redis_client.clone();
-			let base_coin_clone = base_coin.clone();
-			let coins_clone = coins.clone();
 
 			async move {
-				let prices = fetch_prices(provider_clone, &base_coin_clone, coins_clone).await;
-				info!("fetched prices");
+				let prices = fetch_prices(provider_clone, &SUPPORTED_PAIRS).await;
 				let datetime = datapoint::TimeType::DateTime(
 					Utc::now()
 						.duration_trunc(COLLECTION_INTERVAL.duration())
@@ -125,7 +127,7 @@ async fn main() -> Result<()> {
 					let timestamp = datapoint.datetime.timestamp();
 
 					match store_prices(&client_clone, &coin, vec![datapoint]) {
-						Ok(_) => info!(price, coin = ?coin, "stored price"),
+						Ok(_) => debug!(price, coin = ?coin, "stored price"),
 						Err(error) => return error!(error = ?error, "error storing prices"),
 					}
 

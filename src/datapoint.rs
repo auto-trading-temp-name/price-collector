@@ -2,7 +2,7 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use eyre::{OptionExt, Result};
 
 use serde::Deserialize;
-use shared::coin::Coin;
+use shared::coin::Pair;
 
 pub const KRAKEN_MAX_DATAPOINTS: u16 = 720;
 
@@ -41,7 +41,7 @@ impl Default for KrakenInterval {
 pub struct Datapoint {
 	pub price: Option<f64>,
 	pub datetime: DateTime<Utc>,
-	pub coin: Coin,
+	pub pair: Pair,
 }
 
 #[derive(Clone, Debug, Copy)]
@@ -51,7 +51,7 @@ pub enum TimeType {
 }
 
 impl Datapoint {
-	pub fn new(price: Option<f64>, time: TimeType, coin: Coin) -> Result<Self> {
+	pub fn new(price: Option<f64>, time: TimeType, pair: Pair) -> Result<Self> {
 		let utc_datetime: DateTime<Utc> = match time {
 			TimeType::DateTime(datetime) => datetime,
 			TimeType::Timestamp(timestamp) => NaiveDateTime::from_timestamp_opt(timestamp, 0)
@@ -62,7 +62,7 @@ impl Datapoint {
 		Ok(Self {
 			price,
 			datetime: utc_datetime,
-			coin,
+			pair,
 		})
 	}
 }

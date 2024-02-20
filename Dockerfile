@@ -15,7 +15,7 @@ RUN \
     cargo install --path .
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install ca-certificates -y
+RUN apt-get update && apt-get install ca-certificates m4 -y
 WORKDIR /app
 COPY --from=builder /usr/local/cargo/bin/price-collector price-collector
 COPY .env .
