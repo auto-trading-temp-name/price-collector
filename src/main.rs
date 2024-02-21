@@ -14,7 +14,8 @@ use eyre::Result;
 use fixes::{find_discrepancies, fix_discrepancies, initialize_datapoints};
 use lazy_static::lazy_static;
 use shared::coin::Pair;
-use tracing::{debug, error, info, warn};
+use tracing::level_filters::LevelFilter;
+use tracing::{debug, error, info, warn, Level};
 use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
 use tracing_panic::panic_hook;
 use tracing_subscriber::layer::SubscriberExt;
@@ -46,7 +47,8 @@ async fn main() -> Result<()> {
 		.with(BunyanFormattingLayer::new(
 			"price-collector".into(),
 			std::io::stdout,
-		));
+		))
+		.with(LevelFilter::from_level(Level::DEBUG));
 
 	tracing::subscriber::set_global_default(subscriber).unwrap();
 	std::panic::set_hook(Box::new(panic_hook));
