@@ -19,5 +19,4 @@ RUN apt-get update && apt-get install ca-certificates m4 -y
 WORKDIR /app
 COPY --from=builder /usr/local/cargo/bin/price-collector price-collector
 COPY .env .
-COPY coins.json .
 CMD ["/app/price-collector"]
