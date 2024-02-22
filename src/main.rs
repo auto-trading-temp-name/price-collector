@@ -3,7 +3,10 @@ mod fixes;
 mod interpolate;
 mod price;
 
-use std::{env, sync::Arc};
+use std::{
+	env::{self, VarError},
+	sync::Arc,
+};
 
 use chrono::{prelude::*, Duration, DurationRound};
 use clokwerk::AsyncScheduler;
@@ -13,7 +16,7 @@ use eyre::Result;
 use fixes::{find_discrepancies, fix_discrepancies, initialize_datapoints};
 use lazy_static::lazy_static;
 use shared::{coin::Pair, CustomInterval};
-use tracing::{error, info, level_filters::LevelFilter, Level};
+use tracing::{debug, error, info, level_filters::LevelFilter, warn, Level};
 use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
 use tracing_panic::panic_hook;
 use tracing_subscriber::{filter::FilterFn, layer::SubscriberExt, Layer, Registry};
