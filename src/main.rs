@@ -48,7 +48,6 @@ async fn main() -> Result<()> {
 		))
 		.with(
 			BunyanFormattingLayer::new(name.into(), std::io::stdout)
-				.with_filter(FilterFn::new(move |metadata| metadata.target() == name))
 				.with_filter(LevelFilter::from_level(Level::DEBUG)),
 		);
 
