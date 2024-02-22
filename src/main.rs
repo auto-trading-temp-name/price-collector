@@ -3,8 +3,7 @@ mod fixes;
 mod interpolate;
 mod price;
 
-use std::sync::Arc;
-use std::{env, env::VarError};
+use std::{env, sync::Arc};
 
 use chrono::{prelude::*, Duration, DurationRound};
 use clokwerk::AsyncScheduler;
@@ -13,16 +12,13 @@ use ethers::prelude::*;
 use eyre::Result;
 use fixes::{find_discrepancies, fix_discrepancies, initialize_datapoints};
 use lazy_static::lazy_static;
-use shared::coin::Pair;
-use tracing::level_filters::LevelFilter;
-use tracing::{debug, error, info, warn, Level};
+use shared::{coin::Pair, CustomInterval};
+use tracing::{error, info, level_filters::LevelFilter, Level};
 use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
 use tracing_panic::panic_hook;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::Registry;
+use tracing_subscriber::{filter::FilterFn, layer::SubscriberExt, Layer, Registry};
 
 use price::{fetch_prices, store_prices};
-use shared::CustomInterval;
 
 // have to use Duration::milliseconds due to milliseconds (and micro/nanoseconds)
 // being the only way to construct a chrono::Duration in a const
@@ -36,19 +32,22 @@ lazy_static! {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+	let name = "price_collector";
+
 	let subscriber = Registry::default()
 		.with(JsonStorageLayer)
-		.with(BunyanFormattingLayer::new("price-collector".into(), {
+		.with(BunyanFormattingLayer::new(
+			name.into(),
 			std::fs::File::options()
 				.append(true)
 				.create(true)
-				.open("price-collector.log")?
-		}))
-		.with(BunyanFormattingLayer::new(
-			"price-collector".into(),
-			std::io::stdout,
+				.open(format!("{}.log", name))?,
 		))
-		.with(LevelFilter::from_level(Level::DEBUG));
+		.with(
+			BunyanFormattingLayer::new(name.into(), std::io::stdout)
+				.with_filter(FilterFn::new(move |metadata| metadata.target() == name))
+				.with_filter(LevelFilter::from_level(Level::DEBUG)),
+		);
 
 	tracing::subscriber::set_global_default(subscriber).unwrap();
 	std::panic::set_hook(Box::new(panic_hook));
