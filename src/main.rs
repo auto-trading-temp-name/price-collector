@@ -3,10 +3,7 @@ mod fixes;
 mod interpolate;
 mod price;
 
-use std::{
-	env::{self, VarError},
-	sync::Arc,
-};
+use std::env::{self, VarError};
 
 use chrono::{prelude::*, Duration, DurationRound};
 use clokwerk::AsyncScheduler;
@@ -15,13 +12,15 @@ use ethers::prelude::*;
 use eyre::Result;
 use fixes::{find_discrepancies, fix_discrepancies, initialize_datapoints};
 use lazy_static::lazy_static;
+use redis::Client;
 use shared::{coin::Pair, CustomInterval};
 use tracing::{debug, error, info, level_filters::LevelFilter, warn, Level};
 use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
 use tracing_panic::panic_hook;
-use tracing_subscriber::{filter::FilterFn, layer::SubscriberExt, Layer, Registry};
+use tracing_subscriber::{layer::SubscriberExt, Layer, Registry};
 
-use price::{fetch_prices, store_prices};
+use crate::datapoint::TimeType;
+use crate::price::{fetch_prices, store_prices};
 
 // have to use Duration::milliseconds due to milliseconds (and micro/nanoseconds)
 // being the only way to construct a chrono::Duration in a const
@@ -31,6 +30,54 @@ pub const COLLECTION_INTERVAL: CustomInterval =
 pub const CURRENT_CHAIN: Chain = Chain::Mainnet;
 lazy_static! {
 	static ref SUPPORTED_PAIRS: Vec<Pair> = vec![Pair::usdc_weth(Some(CURRENT_CHAIN as u64))];
+}
+
+async fn notify_transaction_processor(timestamp: i64) {
+	let transaction_processor_uri = match env::var("TRANSACTION_PROCESSOR_URI") {
+		Ok(uri) => uri,
+		Err(error) => {
+			return warn!(error = ?error, "{}", match error {
+				VarError::NotPresent => "TRANSACTION_PROCESSOR_URI not specified",
+				_ => "error getting TRANSACTION_PROCESSOR_URI"
+			})
+		}
+	};
+
+	match reqwest::get(format!(
+		"{}/price_update?timestamp={}",
+		transaction_processor_uri, timestamp
+	))
+	.await
+	{
+		Ok(_) => info!("sent out price update signal to transaction processor"),
+		Err(error) => {
+			error!(error = ?error, "error sending price signal to transaction processor")
+		}
+	}
+}
+
+async fn collect_prices<P>(provider: Provider<P>, client: Client)
+where
+	P: JsonRpcClient + 'static,
+{
+	let prices = fetch_prices(provider, &SUPPORTED_PAIRS).await;
+	let datetime = Utc::now()
+		.duration_trunc(COLLECTION_INTERVAL.duration())
+		.expect("price collection timestamp did not truncate propperly");
+
+	for (pair, price) in prices {
+		let datapoint = match Datapoint::new(price, TimeType::DateTime(datetime)) {
+			Ok(datapoint) => datapoint,
+			Err(error) => return error!(error = ?error, "error creating datapoint"),
+		};
+
+		match store_prices(&client, &pair, vec![datapoint]) {
+			Ok(_) => debug!(price, pair = ?pair, "stored price"),
+			Err(error) => return error!(error = ?error, "error storing prices"),
+		}
+	}
+
+	notify_transaction_processor(datetime.timestamp()).await;
 }
 
 #[tokio::main]
@@ -63,8 +110,8 @@ async fn main() -> Result<()> {
 	let redis_uri = env::var("REDIS_URI").expect("REDIS_URI should be in .env");
 	let transport_url = format!("https://mainnet.infura.io/v3/{infura_secret}");
 
-	let web3_provider = Arc::new(Provider::<Http>::try_from(transport_url)?.for_chain(CURRENT_CHAIN));
-	let redis_client = Arc::new(redis::Client::open(redis_uri)?);
+	let web3_provider = Provider::<Http>::try_from(transport_url)?.for_chain(CURRENT_CHAIN);
+	let redis_client = redis::Client::open(redis_uri)?;
 
 	let mut scheduler = AsyncScheduler::new();
 
@@ -110,53 +157,7 @@ async fn main() -> Result<()> {
 				"collecting prices"
 			);
 
-			let provider_clone = web3_provider.clone();
-			let client_clone = redis_client.clone();
-
-			async move {
-				let prices = fetch_prices(provider_clone, &SUPPORTED_PAIRS).await;
-				let datetime = datapoint::TimeType::DateTime(
-					Utc::now()
-						.duration_trunc(COLLECTION_INTERVAL.duration())
-						.expect("price collection timestamp did not truncate propperly"),
-				);
-
-				for (coin, price) in prices {
-					let datapoint = match Datapoint::new(Some(price), datetime, coin.clone()) {
-						Ok(datapoint) => datapoint,
-						Err(error) => return error!(error = ?error, "error creating datapoint"),
-					};
-
-					let timestamp = datapoint.datetime.timestamp();
-
-					match store_prices(&client_clone, &coin, vec![datapoint]) {
-						Ok(_) => debug!(price, coin = ?coin, "stored price"),
-						Err(error) => return error!(error = ?error, "error storing prices"),
-					}
-
-					let transaction_processor_uri = match env::var("TRANSACTION_PROCESSOR_URI") {
-						Ok(uri) => uri,
-						Err(error) => {
-							return warn!(error = ?error, "{}", match error {
-								VarError::NotPresent => "TRANSACTION_PROCESSOR_URI not specified",
-								_ => "error getting TRANSACTION_PROCESSOR_URI"
-							})
-						}
-					};
-
-					match reqwest::get(format!(
-						"{}/price_update?timestamp={}",
-						transaction_processor_uri, timestamp
-					))
-					.await
-					{
-						Ok(_) => info!("sent out price update signal to transaction processor"),
-						Err(error) => {
-							error!(error = ?error, "error sending price signal to transaction processor")
-						}
-					}
-				}
-			}
+			collect_prices(web3_provider.clone(), redis_client.clone())
 		});
 
 	loop {

@@ -27,7 +27,7 @@ fn convert_str_f32<T: FromStr<Err = ParseFloatError>>(value: &Value) -> Result<T
 	Ok(value.parse()?)
 }
 
-pub fn find_discrepancies(client: &redis::Client, pair: &Pair) -> Result<Vec<Datapoint>> {
+pub fn find_discrepancies(client: &redis::Client, pair: &Pair) -> Result<Vec<i64>> {
 	let mut connection = client.get_connection()?;
 	debug!("redis connection established");
 
@@ -36,26 +36,21 @@ pub fn find_discrepancies(client: &redis::Client, pair: &Pair) -> Result<Vec<Dat
 
 	let last_real_dt = NaiveDateTime::from_timestamp_opt(timestamp, 0)
 		.ok_or_eyre("timestamp did not convert to NaiveDateTime")?
-		.and_utc();
+		.and_utc()
+		.timestamp();
 	let next_collection_dt = Utc::now()
 		.trunc_subsecs(0)
 		.with_second(0)
-		.ok_or_eyre("could not set seconds to zero")?;
+		.ok_or_eyre("could not set seconds to zero")?
+		.timestamp();
 
-	let missing_points = ((next_collection_dt.timestamp() - last_real_dt.timestamp()) / 60) as i32;
+	let missing_points = (next_collection_dt - last_real_dt) / 60;
 
-	let discrepancies: Vec<Datapoint> = (0..missing_points)
-		.map(|t| {
-			Datapoint::new(
-				None,
-				TimeType::DateTime(last_real_dt + COLLECTION_INTERVAL.duration().mul(t + 1)),
-				pair.clone(),
-			)
-		})
-		.filter_map(|t| t.ok())
-		.collect();
-
-	Ok(discrepancies)
+	Ok(
+		(0..missing_points)
+			.map(|t| last_real_dt + COLLECTION_INTERVAL.duration().num_seconds().mul(t + 1))
+			.collect(),
+	)
 }
 
 async fn fetch_kraken_datapoints(
@@ -107,19 +102,14 @@ async fn fetch_kraken_datapoints(
 	Ok(datapoints)
 }
 
-pub async fn fix_discrepancies(pair: &Pair, datapoints: Vec<Datapoint>) -> Result<Vec<Datapoint>> {
-	let discrepancies = datapoints
-		.into_iter()
-		.filter(|d| d.price.is_none())
-		.collect::<Vec<Datapoint>>();
-
-	if discrepancies.len() < 1 {
+pub async fn fix_discrepancies(pair: &Pair, datapoints: Vec<i64>) -> Result<Vec<Datapoint>> {
+	if datapoints.len() < 1 {
 		return Err(eyre!("no discrepancies"));
 	}
 
 	let outage_time = COLLECTION_INTERVAL
 		.std_duration()
-		.checked_mul(discrepancies.len() as u32)
+		.checked_mul(datapoints.len() as u32)
 		.ok_or_eyre("outage time calcuation overflowed")?;
 	let outage_time_minutes = (outage_time.as_secs_f32() / 60.0).floor() as u32;
 
@@ -149,28 +139,25 @@ pub async fn fix_discrepancies(pair: &Pair, datapoints: Vec<Datapoint>) -> Resul
 
 	debug!(
 		last_timestamp = (*last_datapoint.unwrap()).timestamp,
-		last_predicted_timestamp = (*discrepancies.last().unwrap()).datetime.timestamp(),
+		last_predicted_timestamp = (*datapoints.last().unwrap()),
 		datapoints = fallback_datapoints.len(),
 		interval = interval as u16,
 		"fetched datapoints"
 	);
 
-	let fixed_discrepancies: Vec<Datapoint> = discrepancies
+	let fixed_discrepancies: Vec<Datapoint> = datapoints
 		.iter()
-		.map(|d| Datapoint {
-			price: match d.price {
-				None => {
-					let fallback_datapoint = fallback_datapoints.get(&d.datetime.timestamp());
-					match fallback_datapoint {
-						Some(fallback_datapoint) => Some(fallback_datapoint.close as f64),
-						_ => None,
-					}
-				}
-				_ => d.price,
-			},
-			..d.to_owned()
+		.map(|d| {
+			Datapoint::new(
+				match fallback_datapoints.get(d) {
+					Some(fallback_datapoint) => fallback_datapoint.close as f64,
+					_ => return None,
+				},
+				TimeType::Timestamp(d.clone()),
+			)
+			.ok()
 		})
-		.filter(|d| d.price.is_some())
+		.filter_map(|d| d)
 		.collect();
 
 	Ok(fixed_discrepancies)
@@ -179,9 +166,8 @@ pub async fn fix_discrepancies(pair: &Pair, datapoints: Vec<Datapoint>) -> Resul
 pub async fn initialize_datapoints(client: &redis::Client, pair: &Pair) -> Result<Vec<Datapoint>> {
 	let into_datapoint = |datapoint: &KrakenDatapoint| -> Result<Datapoint> {
 		Ok(Datapoint::new(
-			Some(datapoint.close as f64),
+			datapoint.close as f64,
 			TimeType::Timestamp(datapoint.timestamp),
-			pair.clone(),
 		)?)
 	};
 

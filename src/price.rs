@@ -11,13 +11,16 @@ use tracing::{debug, error, info, instrument};
 
 use crate::datapoint::Datapoint;
 
-pub async fn fetch_prices(provider: Arc<Provider<Http>>, pairs: &[Pair]) -> Vec<(Pair, f64)> {
+pub async fn fetch_prices<P>(provider: Provider<P>, pairs: &[Pair]) -> Vec<(Pair, f64)>
+where
+	P: JsonRpcClient + 'static,
+{
 	let quoter = Arc::new(Quoter::new(
 		env::var("QUOTER_ADDRESS")
 			.expect("QUOTER_ADDRESS should be in .env")
 			.parse::<Address>()
 			.expect("QUOTER_ADDRESS should be a valid address"),
-		provider,
+		provider.into(),
 	));
 
 	let prices: Vec<f64> = future::join_all(pairs.into_iter().map(|pair| {
@@ -70,15 +73,13 @@ pub fn store_prices(client: &redis::Client, pair: &Pair, datapoints: Vec<Datapoi
 	debug!("redis connection established");
 
 	let count = datapoints.len();
-	let datapoints_iter = datapoints
-		.iter()
-		.filter(|datapoint| datapoint.price.is_some());
+	let datapoints_iter = datapoints.iter();
 
 	if let Err(error) = connection.rpush::<String, Vec<String>, i32>(
 		format!("{}:prices", pair.to_string()),
 		datapoints_iter
 			.clone()
-			.map(|datapoint| datapoint.price.unwrap().to_string())
+			.map(|datapoint| datapoint.price.to_string())
 			.collect(),
 	) {
 		error!(error = ?error, datapoints = ?datapoints, "error pushing price to redis");
