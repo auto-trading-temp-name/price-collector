@@ -4,7 +4,7 @@ use std::num::ParseFloatError;
 use std::ops::Mul;
 use std::str::FromStr;
 
-use chrono::{prelude::*, Duration};
+use chrono::{prelude::*, TimeDelta};
 use eyre::{eyre, ContextCompat, OptionExt, Result};
 use hhmmss::Hhmmss;
 use redis::Commands;
@@ -34,9 +34,9 @@ pub fn find_discrepancies(client: &redis::Client, pair: &Pair) -> Result<Vec<i64
 	let timestamp =
 		connection.lindex::<String, i64>(format!("{}:timestamps", pair.to_string()), -1)?;
 
-	let last_real_dt = NaiveDateTime::from_timestamp_opt(timestamp, 0)
+	let last_real_dt = DateTime::from_timestamp(timestamp, 0)
 		.ok_or_eyre("timestamp did not convert to NaiveDateTime")?
-		.and_utc()
+		.to_utc()
 		.timestamp();
 	let next_collection_dt = Utc::now()
 		.trunc_subsecs(0)
@@ -117,10 +117,12 @@ pub async fn fix_discrepancies(pair: &Pair, datapoints: Vec<i64>) -> Result<Vec<
 	let max_minutes_in_interval = interval as u16 * KRAKEN_MAX_DATAPOINTS as u16;
 
 	debug!("outage was {:?} long", outage_time.hhmmss());
-	debug!(
-		"max datapoints in interval is {:?}",
-		Duration::minutes(max_minutes_in_interval as i64).hhmmss()
-	);
+	if let Some(max_datapoints) = TimeDelta::try_minutes(max_minutes_in_interval as i64) {
+		debug!(
+			"max datapoints in interval is {:?}",
+			max_datapoints.hhmmss()
+		);
+	}
 
 	if outage_time_minutes as u32 >= max_minutes_in_interval as u32 {
 		warn!("all discrepancies will not be able to be fixed",);

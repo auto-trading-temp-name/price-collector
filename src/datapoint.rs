@@ -1,4 +1,4 @@
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use eyre::{OptionExt, Result};
 use serde::Deserialize;
 
@@ -51,9 +51,9 @@ impl Datapoint {
 	pub fn new(price: f64, time: TimeType) -> Result<Self> {
 		let utc_datetime: DateTime<Utc> = match time {
 			TimeType::DateTime(datetime) => datetime,
-			TimeType::Timestamp(timestamp) => NaiveDateTime::from_timestamp_opt(timestamp, 0)
+			TimeType::Timestamp(timestamp) => DateTime::from_timestamp(timestamp, 0)
 				.ok_or_eyre("timestamp did not convert to NaiveDateTime")?
-				.and_utc(),
+				.to_utc(),
 		};
 
 		Ok(Self {

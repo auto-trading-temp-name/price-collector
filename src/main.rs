@@ -4,8 +4,9 @@ mod interpolate;
 mod price;
 
 use std::env::{self, VarError};
+use std::time::Duration;
 
-use chrono::{prelude::*, Duration, DurationRound};
+use chrono::{prelude::*, DurationRound};
 use clokwerk::AsyncScheduler;
 use datapoint::Datapoint;
 use ethers::prelude::*;
@@ -25,7 +26,7 @@ use crate::price::{fetch_prices, store_prices};
 // have to use Duration::milliseconds due to milliseconds (and micro/nanoseconds)
 // being the only way to construct a chrono::Duration in a const
 pub const COLLECTION_INTERVAL: CustomInterval =
-	CustomInterval(Duration::milliseconds(5 * 60 * 1_000));
+	CustomInterval(Duration::from_millis(5 * 60 * 1_000));
 
 pub const CURRENT_CHAIN: Chain = Chain::Mainnet;
 lazy_static! {
