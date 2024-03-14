@@ -63,7 +63,11 @@ where
 {
 	let prices = fetch_prices(provider, &SUPPORTED_PAIRS).await;
 	let datetime = Utc::now()
-		.duration_trunc(COLLECTION_INTERVAL.duration())
+		.duration_trunc(
+			COLLECTION_INTERVAL
+				.duration()
+				.expect("collection interval did not convert into chrono duration propperly"),
+		)
 		.expect("price collection timestamp did not truncate propperly");
 
 	for (pair, price) in prices {
@@ -154,7 +158,7 @@ async fn main() -> Result<()> {
 		.every(COLLECTION_INTERVAL.interval())
 		.run(move || {
 			info!(
-				interval = format!("{}s", COLLECTION_INTERVAL.duration().num_seconds()),
+				interval = format!("{}s", COLLECTION_INTERVAL.std_duration().as_secs()),
 				"collecting prices"
 			);
 

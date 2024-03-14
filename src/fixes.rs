@@ -48,7 +48,7 @@ pub fn find_discrepancies(client: &redis::Client, pair: &Pair) -> Result<Vec<i64
 
 	Ok(
 		(0..missing_points)
-			.map(|t| last_real_dt + COLLECTION_INTERVAL.duration().num_seconds().mul(t + 1))
+			.map(|t| last_real_dt + (COLLECTION_INTERVAL.std_duration().as_secs() as i64).mul(t + 1))
 			.collect(),
 	)
 }
