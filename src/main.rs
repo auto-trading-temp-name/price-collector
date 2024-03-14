@@ -163,11 +163,6 @@ async fn main() -> Result<()> {
 
 	loop {
 		scheduler.run_pending().await;
-		tokio::time::sleep(
-			Duration::milliseconds(10)
-				.to_std()
-				.expect("10ms sleep could not parse to std"),
-		)
-		.await;
+		tokio::time::sleep(Duration::from_millis(10)).await;
 	}
 }
