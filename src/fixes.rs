@@ -203,7 +203,7 @@ pub async fn initialize_datapoints(client: &redis::Client, pair: &Pair) -> Resul
 	let selected_datapoints: Vec<Datapoint> = [fallback_datapoints, extra_fallback_datapoints]
 		.concat()
 		.into_iter()
-		.filter(|datapoint| datapoint.datetime.timestamp() > first_timestamp)
+		.filter(|datapoint| datapoint.timestamp > first_timestamp)
 		.collect();
 
 	Ok(selected_datapoints)

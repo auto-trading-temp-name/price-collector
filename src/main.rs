@@ -1,3 +1,4 @@
+mod api;
 mod datapoint;
 mod fixes;
 mod interpolate;
@@ -6,6 +7,8 @@ mod price;
 use std::env::{self, VarError};
 use std::time::Duration;
 
+use actix_web::web::Data;
+use actix_web::{rt, App, HttpServer};
 use chrono::{prelude::*, DurationRound};
 use clokwerk::AsyncScheduler;
 use datapoint::Datapoint;
@@ -85,7 +88,7 @@ where
 	notify_transaction_processor(datetime.timestamp()).await;
 }
 
-#[tokio::main]
+#[actix_web::main]
 async fn main() -> Result<()> {
 	let name = "price_collector";
 
@@ -154,6 +157,7 @@ async fn main() -> Result<()> {
 		.await;
 	}
 
+	let redis_client_clone = redis_client.clone();
 	scheduler
 		.every(COLLECTION_INTERVAL.interval())
 		.run(move || {
@@ -162,8 +166,19 @@ async fn main() -> Result<()> {
 				"collecting prices"
 			);
 
-			collect_prices(web3_provider.clone(), redis_client.clone())
+			collect_prices(web3_provider.clone(), redis_client_clone.clone())
 		});
+
+	let redis_client_clone = redis_client.clone();
+	let server = HttpServer::new(move || {
+		App::new()
+			.service(api::prices_wrapper)
+			.app_data(Data::new(redis_client_clone.clone()))
+	})
+	.bind(("127.0.0.1", 80))?
+	.run();
+
+	rt::spawn(server);
 
 	loop {
 		scheduler.run_pending().await;

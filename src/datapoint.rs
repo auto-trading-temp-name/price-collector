@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
-use eyre::{OptionExt, Result};
-use serde::Deserialize;
+use eyre::Result;
+use serde::{Deserialize, Serialize};
 
 pub const KRAKEN_MAX_DATAPOINTS: u16 = 720;
 
@@ -35,10 +35,10 @@ impl Default for KrakenInterval {
 	}
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Datapoint {
 	pub price: f64,
-	pub datetime: DateTime<Utc>,
+	pub timestamp: i64,
 }
 
 #[derive(Clone, Debug, Copy)]
@@ -49,16 +49,11 @@ pub enum TimeType {
 
 impl Datapoint {
 	pub fn new(price: f64, time: TimeType) -> Result<Self> {
-		let utc_datetime: DateTime<Utc> = match time {
-			TimeType::DateTime(datetime) => datetime,
-			TimeType::Timestamp(timestamp) => DateTime::from_timestamp(timestamp, 0)
-				.ok_or_eyre("timestamp did not convert to NaiveDateTime")?
-				.to_utc(),
+		let timestamp = match time {
+			TimeType::DateTime(datetime) => datetime.timestamp(),
+			TimeType::Timestamp(timestamp) => timestamp,
 		};
 
-		Ok(Self {
-			price,
-			datetime: utc_datetime,
-		})
+		Ok(Self { price, timestamp })
 	}
 }

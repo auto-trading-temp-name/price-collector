@@ -24,8 +24,8 @@ pub fn interpolate_datapoints(
 		.into_iter()
 		.zip(rotated_datapoints.into_iter())
 		.map(|(datapoint, next_datapoint)| {
-			let timestamp = datapoint.datetime.timestamp();
-			let next_timestamp = next_datapoint.datetime.timestamp();
+			let timestamp = datapoint.timestamp;
+			let next_timestamp = next_datapoint.timestamp;
 
 			let mut output = vec![datapoint.clone()];
 

@@ -88,7 +88,7 @@ pub fn store_prices(client: &redis::Client, pair: &Pair, datapoints: Vec<Datapoi
 	if let Err(error) = connection.rpush::<String, Vec<String>, i32>(
 		format!("{}:timestamps", pair.to_string()),
 		datapoints_iter
-			.map(|datapoint| datapoint.datetime.timestamp().to_string())
+			.map(|datapoint| datapoint.timestamp.to_string())
 			.collect(),
 	) {
 		error!(error = ?error, datapoints = ?datapoints, "error pushing timestamp to redis");
