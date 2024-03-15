@@ -15,15 +15,15 @@ use crate::{
 	COLLECTION_INTERVAL, CURRENT_CHAIN,
 };
 
-const MAX_DATAPOINTS: i16 = 720;
+const MAX_DATAPOINTS: u16 = 720;
 
 fn get_prices(
 	pair_string: String,
 	client: &Client,
-	mut amount: i16,
-	interval: i16,
+	mut amount: u16,
+	interval: u16,
 ) -> Result<Vec<Datapoint>> {
-	let collection_interval_minutes = (COLLECTION_INTERVAL.std_duration().as_secs() / 60) as i16;
+	let collection_interval_minutes = (COLLECTION_INTERVAL.std_duration().as_secs() / 60) as u16;
 	if interval < collection_interval_minutes {
 		Err(eyre!("interval smaller than collection interval"))?;
 	}
@@ -32,19 +32,19 @@ fn get_prices(
 		Err(eyre!("interval does not fit into collection interval"))?;
 	}
 
-	amount = amount * (interval / collection_interval_minutes) * -1;
+	let amount: i32 = (amount * (interval / collection_interval_minutes)) as i32 * -1;
 	let pair =
 		Pair::get_pair(pair_string.as_str(), Some(CURRENT_CHAIN.into())).ok_or_eyre("invalid pair")?;
 	let mut connection = client.get_connection()?;
 
 	let timestamps: Vec<i64> = connection.lrange(
 		format!("{}:timestamps", pair.to_string()),
-		amount.into(),
+		amount as isize,
 		-1,
 	)?;
 
 	let prices: Vec<f64> =
-		connection.lrange(format!("{}:prices", pair.to_string()), amount.into(), -1)?;
+		connection.lrange(format!("{}:prices", pair.to_string()), amount as isize, -1)?;
 
 	let datapoints = zip(prices, timestamps)
 		.map(|(price, timestamp)| Datapoint::new(price, TimeType::Timestamp(timestamp)))
@@ -61,19 +61,25 @@ struct ErrorValue {
 }
 
 #[derive(Deserialize)]
-struct Interval {
-	interval: i16,
+struct DatapointRequestInfo {
+	interval: u16,
+	amount: Option<u16>,
 }
 
 #[get("/prices/{pair}")]
 async fn prices_wrapper(
 	pair: Path<String>,
-	interval: Query<Interval>,
+	interval: Query<DatapointRequestInfo>,
 	client: Data<Client>,
 ) -> impl Responder {
 	let pair = pair.into_inner();
-	let Interval { interval } = interval.into_inner();
-	match get_prices(pair, client.as_ref(), MAX_DATAPOINTS, interval) {
+	let DatapointRequestInfo { interval, amount } = interval.into_inner();
+	match get_prices(
+		pair,
+		client.as_ref(),
+		u16::min(MAX_DATAPOINTS, amount.unwrap_or(u16::MAX)),
+		interval,
+	) {
 		Ok(prices) => HttpResponse::Ok().json(prices),
 		Err(error) => HttpResponse::BadRequest().json(ErrorValue {
 			error: error.to_string(),
