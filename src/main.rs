@@ -172,6 +172,7 @@ async fn main() -> Result<()> {
 	let server = HttpServer::new(move || {
 		App::new()
 			.service(api::prices_wrapper)
+			.service(api::current)
 			.app_data(Data::new(redis_client_clone.clone()))
 	})
 	.bind(("127.0.0.1", 80))?

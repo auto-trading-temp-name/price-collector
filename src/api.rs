@@ -39,9 +39,10 @@ fn get_prices(
 
 	let offset: i32 = match before {
 		Some(timestamp) => {
-			let current: i64 = connection.lindex(format!("{}:timestamps", pair.to_string()), -1)?;
+			let current_timestamp: i64 =
+				connection.lindex(format!("{}:timestamps", pair.to_string()), -1)?;
 			let collection_interval_secs = COLLECTION_INTERVAL.std_duration().as_secs() as i64;
-			(current / collection_interval_secs - timestamp / collection_interval_secs) as i32 + 1
+			(current_timestamp / collection_interval_secs - timestamp / collection_interval_secs) as i32
 		}
 		None => 0,
 	};
@@ -49,7 +50,7 @@ fn get_prices(
 	let offset = (offset * -1) as isize;
 	let amount = (amount * (interval / collection_interval_minutes)) as isize * -1;
 
-	let current: i64 = connection.lindex(format!("{}:timestamps", pair.to_string()), -1)?;
+	let current_timestamp: i64 = connection.lindex(format!("{}:timestamps", pair.to_string()), -1)?;
 	let collection_interval_secs = COLLECTION_INTERVAL.std_duration().as_secs() as i64;
 
 	let amount = amount as isize;
@@ -81,30 +82,63 @@ struct ErrorValue {
 }
 
 #[derive(Deserialize)]
-struct DatapointRequestInfo {
+struct PricesQueryInfo {
 	interval: u16,
 	amount: Option<u16>,
-	before: Option<i64>,
+	at: Option<i64>,
 }
 
 #[get("/prices/{pair}")]
 async fn prices_wrapper(
 	pair: Path<String>,
-	interval: Query<DatapointRequestInfo>,
+	interval: Query<PricesQueryInfo>,
 	client: Data<Client>,
 ) -> impl Responder {
 	let pair = pair.into_inner();
-	let DatapointRequestInfo {
+	let PricesQueryInfo {
 		interval,
 		amount,
-		before,
+		at,
 	} = interval.into_inner();
 	match get_prices(
 		pair,
 		client.as_ref(),
 		u16::min(MAX_DATAPOINTS, amount.unwrap_or(u16::MAX)),
 		interval,
-		before,
+		at,
+	) {
+		Ok(mut prices) => {
+			prices.reverse();
+			HttpResponse::Ok().json(prices)
+		}
+		Err(error) => HttpResponse::BadRequest().json(ErrorValue {
+			error: error.to_string(),
+		}),
+	}
+}
+
+#[derive(Deserialize)]
+struct CurrentQueryInfo {
+	at: Option<i64>,
+}
+
+#[get("/current/{pair}")]
+async fn current(
+	pair: Path<String>,
+	interval: Query<CurrentQueryInfo>,
+	client: Data<Client>,
+) -> impl Responder {
+	let pair = pair.into_inner();
+	let CurrentQueryInfo { at } = interval.into_inner();
+	match get_prices(
+		pair,
+		client.as_ref(),
+		1,
+		(COLLECTION_INTERVAL.std_duration().as_secs() / 60) as u16,
+		match at {
+			Some(timestamp) => Some(timestamp),
+			None => None,
+		},
 	) {
 		Ok(mut prices) => {
 			prices.reverse();
