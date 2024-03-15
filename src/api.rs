@@ -37,21 +37,23 @@ fn get_prices(
 		Pair::get_pair(pair_string.as_str(), Some(CURRENT_CHAIN.into())).ok_or_eyre("invalid pair")?;
 	let mut connection = client.get_connection()?;
 
+	let collection_interval_secs = COLLECTION_INTERVAL.std_duration().as_secs() as i64;
+
+	// convert timestamp into offset
 	let offset: i32 = match before {
 		Some(timestamp) => {
 			let current_timestamp: i64 =
 				connection.lindex(format!("{}:timestamps", pair.to_string()), -1)?;
-			let collection_interval_secs = COLLECTION_INTERVAL.std_duration().as_secs() as i64;
 			(current_timestamp / collection_interval_secs - timestamp / collection_interval_secs) as i32
 		}
 		None => 0,
 	};
 
+	// apply corrections to amount and offset to prepare for querrying with redis
 	let offset = (offset * -1) as isize;
 	let amount = (amount * (interval / collection_interval_minutes)) as isize * -1;
 
 	let current_timestamp: i64 = connection.lindex(format!("{}:timestamps", pair.to_string()), -1)?;
-	let collection_interval_secs = COLLECTION_INTERVAL.std_duration().as_secs() as i64;
 
 	let amount = amount as isize;
 
