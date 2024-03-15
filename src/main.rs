@@ -66,9 +66,9 @@ where
 		.duration_trunc(
 			COLLECTION_INTERVAL
 				.duration()
-				.expect("collection interval did not convert into chrono duration propperly"),
+				.expect("collection interval did not convert into chrono duration properly"),
 		)
-		.expect("price collection timestamp did not truncate propperly");
+		.expect("price collection timestamp did not truncate properly");
 
 	for (pair, price) in prices {
 		let datapoint = match Datapoint::new(price, TimeType::DateTime(datetime)) {
