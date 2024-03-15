@@ -17,11 +17,6 @@ use crate::{
 
 const MAX_DATAPOINTS: i16 = 720;
 
-fn generate_pair(pair_string: String) -> Option<Pair> {
-	return Some(Pair::usdc_weth(Some(CURRENT_CHAIN.into())));
-	todo!()
-}
-
 fn get_prices(
 	pair_string: String,
 	client: &Client,
@@ -38,7 +33,8 @@ fn get_prices(
 	}
 
 	amount = amount * (interval / collection_interval_minutes) * -1;
-	let pair = generate_pair(pair_string).ok_or_eyre("invalid pair")?;
+	let pair =
+		Pair::get_pair(pair_string.as_str(), Some(CURRENT_CHAIN.into())).ok_or_eyre("invalid pair")?;
 	let mut connection = client.get_connection()?;
 
 	let timestamps: Vec<i64> = connection.lrange(

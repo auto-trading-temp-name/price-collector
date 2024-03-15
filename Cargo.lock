@@ -3309,7 +3309,7 @@ dependencies = [
 [[package]]
 name = "shared"
 version = "0.1.0"
-source = "git+https://github.com/auto-trading-temp-name/shared-rust.git#dd8d92988b349cf9d48ed3926e17d3d983889923"
+source = "git+https://github.com/auto-trading-temp-name/shared-rust.git#de7079b8a6103945a31674ec43f8b4b547e1ba36"
 dependencies = [
  "chrono",
  "clokwerk",
