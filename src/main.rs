@@ -70,7 +70,7 @@ where
 
 	let datetime = Utc::now()
 		.duration_round(duration)
-		.expect("price collection timestamp did not round propperly");
+		.expect("price collection timestamp did not round properly");
 
 	for (pair, price) in prices {
 		let datapoint = match Datapoint::new(price, TimeType::DateTime(datetime)) {
