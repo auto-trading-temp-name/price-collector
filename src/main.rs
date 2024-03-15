@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use actix_web::web::Data;
 use actix_web::{rt, App, HttpServer};
-use chrono::{prelude::*, DurationRound};
+use chrono::{prelude::*, DurationRound, TimeDelta};
 use clokwerk::AsyncScheduler;
 use datapoint::Datapoint;
 use ethers::prelude::*;
@@ -65,13 +65,12 @@ where
 	P: JsonRpcClient + 'static,
 {
 	let prices = fetch_prices(provider, &SUPPORTED_PAIRS).await;
+	let duration =
+		TimeDelta::try_minutes(1).expect("1 minute did not convert into timedelta propperly");
+
 	let datetime = Utc::now()
-		.duration_trunc(
-			COLLECTION_INTERVAL
-				.duration()
-				.expect("collection interval did not convert into chrono duration propperly"),
-		)
-		.expect("price collection timestamp did not truncate propperly");
+		.duration_round(duration)
+		.expect("price collection timestamp did not round propperly");
 
 	for (pair, price) in prices {
 		let datapoint = match Datapoint::new(price, TimeType::DateTime(datetime)) {
