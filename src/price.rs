@@ -68,7 +68,7 @@ where
 	pairs.to_vec().into_iter().zip(prices.into_iter()).collect()
 }
 
-#[instrument(err, skip(client))]
+#[instrument(err, skip(client, datapoints))]
 pub fn store_prices(client: &redis::Client, pair: &Pair, datapoints: Vec<Datapoint>) -> Result<()> {
 	let mut connection = client.get_connection()?;
 	debug!("redis connection established");
