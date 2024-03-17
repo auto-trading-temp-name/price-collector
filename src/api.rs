@@ -9,6 +9,7 @@ use eyre::{eyre, OptionExt, Result};
 use redis::{Client, Commands};
 use serde::{Deserialize, Serialize};
 use shared::coin::Pair;
+use tracing::warn;
 
 use crate::{
 	datapoint::{Datapoint, TimeType},
@@ -22,7 +23,7 @@ fn get_prices(
 	client: &Client,
 	amount: u16,
 	interval: u16,
-	before: Option<i64>,
+	at: Option<i64>,
 ) -> Result<Vec<Datapoint>> {
 	let collection_interval_minutes = (COLLECTION_INTERVAL.std_duration().as_secs() / 60) as u16;
 	if interval < collection_interval_minutes {
@@ -40,7 +41,7 @@ fn get_prices(
 	let collection_interval_secs = COLLECTION_INTERVAL.std_duration().as_secs() as i64;
 
 	// convert timestamp into offset
-	let offset: i32 = match before {
+	let offset: i32 = match at {
 		Some(timestamp) => {
 			let current_timestamp: i64 =
 				connection.lindex(format!("{}:timestamps", pair.to_string()), -1)?;
