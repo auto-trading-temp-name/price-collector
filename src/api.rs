@@ -9,7 +9,6 @@ use eyre::{eyre, OptionExt, Result};
 use redis::{Client, Commands};
 use serde::{Deserialize, Serialize};
 use shared::coin::Pair;
-use tracing::warn;
 
 use crate::{
 	datapoint::{Datapoint, TimeType},
