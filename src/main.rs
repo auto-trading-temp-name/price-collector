@@ -66,7 +66,7 @@ where
 {
 	let prices = fetch_prices(provider, &SUPPORTED_PAIRS).await;
 	let duration =
-		TimeDelta::try_minutes(1).expect("1 minute did not convert into timedelta propperly");
+		TimeDelta::try_minutes(1).expect("1 minute did not convert into timedelta properly");
 
 	let datetime = Utc::now()
 		.duration_round(duration)
