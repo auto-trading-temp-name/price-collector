@@ -1,5 +1,6 @@
 use std::{env, ops::Div, sync::Arc};
 
+use chrono::{DateTime, DurationRound, TimeDelta};
 use ethers::prelude::*;
 use ethers::utils::parse_units;
 use eyre::{Context, OptionExt, Result};
@@ -67,7 +68,7 @@ where
 	pairs.to_vec().into_iter().zip(prices.into_iter()).collect()
 }
 
-#[instrument(err, skip(client))]
+#[instrument(err, skip(client, datapoints))]
 pub fn store_prices(client: &redis::Client, pair: &Pair, datapoints: Vec<Datapoint>) -> Result<()> {
 	let mut connection = client.get_connection()?;
 	debug!("redis connection established");
@@ -85,10 +86,21 @@ pub fn store_prices(client: &redis::Client, pair: &Pair, datapoints: Vec<Datapoi
 		error!(error = ?error, datapoints = ?datapoints, "error pushing price to redis");
 	}
 
+	let duration =
+		TimeDelta::try_minutes(1).expect("1 minute did not convert into timedelta propperly");
 	if let Err(error) = connection.rpush::<String, Vec<String>, i32>(
 		format!("{}:timestamps", pair.to_string()),
 		datapoints_iter
-			.map(|datapoint| datapoint.datetime.timestamp().to_string())
+			.map(|datapoint| {
+				Some(
+					DateTime::from_timestamp(datapoint.timestamp, 0)?
+						.duration_round(duration)
+						.ok()?
+						.timestamp()
+						.to_string(),
+				)
+			})
+			.filter_map(|x| x)
 			.collect(),
 	) {
 		error!(error = ?error, datapoints = ?datapoints, "error pushing timestamp to redis");

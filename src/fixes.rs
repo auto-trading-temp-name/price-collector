@@ -176,35 +176,69 @@ pub async fn initialize_datapoints(client: &redis::Client, pair: &Pair) -> Resul
 	let mut connection = client.get_connection()?;
 	debug!("redis connection established");
 
-	let fallback_interval = KrakenInterval::default();
-	let extra_fallback_interval = KrakenInterval::Day;
+	// @TODO please make sure this is sorted
+	let intervals = [
+		KrakenInterval::Day,
+		KrakenInterval::FourHours,
+		KrakenInterval::Hour,
+		KrakenInterval::HalfHour,
+		KrakenInterval::FifteenMinutes,
+		KrakenInterval::default(),
+	];
 
-	let fallback_datapoints: Vec<Datapoint> = fetch_kraken_datapoints(pair, &fallback_interval)
-		.await?
-		.iter()
-		.map(into_datapoint)
-		.filter_map(|x| x.ok())
+	let smallest_interval = intervals[intervals.len() - 1];
+
+	let mut rolled_intervals: Vec<Option<&KrakenInterval>> =
+		intervals.iter().map(|x| Some(x)).collect();
+
+	rolled_intervals.rotate_left(1);
+	rolled_intervals[intervals.len() - 1] = None;
+
+	let fallback_datapoints: Vec<Vec<Datapoint>> =
+		futures::future::join_all(intervals.into_iter().zip(rolled_intervals).map(
+			|(interval, previous_interval)| async move {
+				match previous_interval {
+					Some(previous_interval) => warn!(
+						trunc_at = (interval as usize * 720) / (*previous_interval as usize * 720),
+						interval = interval as usize,
+						previous_interval = *previous_interval as usize,
+						"interval truncate length"
+					),
+					None => warn!(interval = interval as usize, "no previous interval"),
+				}
+				let mut truncated_datapoints = fetch_kraken_datapoints(pair, &interval).await?;
+				if let Some(previous_interval) = previous_interval {
+					let interval = interval as usize * 720;
+					let previous_interval = *previous_interval as usize * 720;
+					truncated_datapoints.truncate(((interval * 720) - (previous_interval * 720)) / interval)
+				}
+
+				Ok(interpolate_datapoints(
+					truncated_datapoints
+						.iter()
+						.map(into_datapoint)
+						.filter_map(|x| x.ok())
+						.collect(),
+					&interval,
+					&smallest_interval,
+				))
+			},
+		))
+		.await
+		.into_iter()
+		.filter_map(|x: Result<Vec<Datapoint>>| x.ok())
 		.collect();
-	let extra_fallback_datapoints: Vec<Datapoint> = interpolate_datapoints(
-		fetch_kraken_datapoints(pair, &extra_fallback_interval)
-			.await?
-			.iter()
-			.map(into_datapoint)
-			.filter_map(|x| x.ok())
-			.collect(),
-		&extra_fallback_interval,
-		&fallback_interval,
-	);
 
 	let first_timestamp = connection
 		.lindex(format!("{}:timestamps", pair.to_string()), -1)
 		.unwrap_or(i64::MIN);
 
-	let selected_datapoints: Vec<Datapoint> = [fallback_datapoints, extra_fallback_datapoints]
+	let mut selected_datapoints: Vec<Datapoint> = fallback_datapoints
 		.concat()
 		.into_iter()
-		.filter(|datapoint| datapoint.datetime.timestamp() > first_timestamp)
+		.filter(|datapoint| datapoint.timestamp > first_timestamp)
 		.collect();
+	selected_datapoints.sort_by_key(|x| x.timestamp);
 
 	Ok(selected_datapoints)
 }

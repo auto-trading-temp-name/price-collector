@@ -1,3 +1,4 @@
+mod api;
 mod datapoint;
 mod fixes;
 mod interpolate;
@@ -6,7 +7,9 @@ mod price;
 use std::env::{self, VarError};
 use std::time::Duration;
 
-use chrono::{prelude::*, DurationRound};
+use actix_web::web::Data;
+use actix_web::{rt, App, HttpServer};
+use chrono::{prelude::*, DurationRound, TimeDelta};
 use clokwerk::AsyncScheduler;
 use datapoint::Datapoint;
 use ethers::prelude::*;
@@ -62,13 +65,12 @@ where
 	P: JsonRpcClient + 'static,
 {
 	let prices = fetch_prices(provider, &SUPPORTED_PAIRS).await;
+	let duration =
+		TimeDelta::try_minutes(1).expect("1 minute did not convert into timedelta propperly");
+
 	let datetime = Utc::now()
-		.duration_trunc(
-			COLLECTION_INTERVAL
-				.duration()
-				.expect("collection interval did not convert into chrono duration properly"),
-		)
-		.expect("price collection timestamp did not truncate properly");
+		.duration_round(duration)
+		.expect("price collection timestamp did not round properly");
 
 	for (pair, price) in prices {
 		let datapoint = match Datapoint::new(price, TimeType::DateTime(datetime)) {
@@ -85,7 +87,7 @@ where
 	notify_transaction_processor(datetime.timestamp()).await;
 }
 
-#[tokio::main]
+#[actix_web::main]
 async fn main() -> Result<()> {
 	let name = "price_collector";
 
@@ -154,6 +156,7 @@ async fn main() -> Result<()> {
 		.await;
 	}
 
+	let redis_client_clone = redis_client.clone();
 	scheduler
 		.every(COLLECTION_INTERVAL.interval())
 		.run(move || {
@@ -162,8 +165,20 @@ async fn main() -> Result<()> {
 				"collecting prices"
 			);
 
-			collect_prices(web3_provider.clone(), redis_client.clone())
+			collect_prices(web3_provider.clone(), redis_client_clone.clone())
 		});
+
+	let redis_client_clone = redis_client.clone();
+	let server = HttpServer::new(move || {
+		App::new()
+			.service(api::prices_wrapper)
+			.service(api::current)
+			.app_data(Data::new(redis_client_clone.clone()))
+	})
+	.bind(("127.0.0.1", 80))?
+	.run();
+
+	rt::spawn(server);
 
 	loop {
 		scheduler.run_pending().await;
